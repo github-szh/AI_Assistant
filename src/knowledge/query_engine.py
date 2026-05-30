@@ -32,9 +32,12 @@ class QueryEngine:
         self._retriever = retriever
 
     @staticmethod
-    def _cache_key(question: str, top_k: int) -> str:
-        """根据问题内容生成缓存键（MD5哈希+top_k），确保相同问题命中同一缓存"""
-        return f"rag:{hashlib.md5(question.encode()).hexdigest()}:{top_k}"
+    def _cache_key(question: str, top_k: int, doc_ids: list[str] | None = None) -> str:
+        """根据问题内容生成缓存键（MD5哈希+top_k+doc_ids），确保相同问题命中同一缓存"""
+        base = f"rag:{hashlib.md5(question.encode()).hexdigest()}:{top_k}"
+        if doc_ids:
+            base += ":" + ",".join(sorted(doc_ids))
+        return base
 
     @property
     def retriever(self):
@@ -47,33 +50,62 @@ class QueryEngine:
     # shared retrieval logic
     # ------------------------------------------------------------------
 
-    def _retrieve(self, question: str, top_k: int) -> dict | None:
-        """Two-stage retrieval. Returns {"nodes": [...], "sources": [...], "context": str}
-        or None if the vector store is down, or empty list if nothing found.
-        "nodes" will be [] if no relevant chunks were found.
+    def _retrieve(self, question: str, top_k: int, doc_ids: list[str] | None = None) -> dict | None:
+        """Two-level retrieval with automatic summary-based document pre-filtering.
+
+        Level 1 (when enabled): search doc_summaries → top-3 relevant doc_ids.
+        Level 2: search chunk index within those documents → RRF → expand → rerank.
+
+        Skipped when KB has < two_stage_min_docs documents or doc_ids is already
+        provided by the caller.
         """
-        def _do_retrieve(search_query: str, deep: bool = False) -> list | None:
+        def _do_retrieve(search_query: str, deep: bool = False, ids: list[str] | None = None) -> list | None:
             try:
                 if deep:
-                    return self.retriever.retrieve_with_rerank(search_query)
-                return self.retriever.retrieve(search_query)
+                    return self.retriever.retrieve_with_rerank(search_query, doc_ids=ids)
+                return self.retriever.retrieve(search_query, doc_ids=ids)
             except (ImportError, ModuleNotFoundError) as exc:
                 logger.warning("Vector store not available: %s", exc)
                 return None
 
-        nodes = _do_retrieve(question)
+        # ── Level 1: document summary search ──────────────────────
+        target_ids = doc_ids  # caller-provided (future UI), skip Level 1
+        if target_ids is None:
+            doc_count = _count_documents()
+            if doc_count >= settings.two_stage_min_docs:
+                try:
+                    from src.knowledge.embeddings import get_embedding_manager
+                    from src.knowledge.index_store import _search_summaries
+                    emb_mgr = get_embedding_manager()
+                    query_emb = emb_mgr.encode_query(question)
+                    relevant = _search_summaries(query_emb, settings.summary_search_top_k)
+                    if relevant:
+                        target_ids = [r["doc_id"] for r in relevant]
+                        logger.debug("Level 1: %d summaries → %d docs selected",
+                                     doc_count, len(target_ids))
+                except Exception:
+                    logger.debug("Level 1 unavailable, falling back to full search")
+
+        # ── Level 2: chunk search (with optional doc filter) ──────
+        nodes = _do_retrieve(question, ids=target_ids)
         if nodes is None:
             return None  # vector store down
         if not nodes:
             return {"nodes": [], "sources": [], "context": ""}  # nothing found
 
-        top_score = getattr(nodes[0], "score", 0) or 0
+        # Use dense similarity for threshold check when available (RRF fusion
+        # scores are in a different range and would always trigger Stage 2).
+        top_score = getattr(nodes[0], "_dense_max_score", None)
+        if top_score is None:
+            top_score = getattr(nodes[0], "score", 0) or 0
+
+        logger.debug("Stage 1 top_score=%.3f (threshold=%.2f)", top_score, settings.retrieval_stage1_threshold)
 
         if top_score <= settings.retrieval_stage1_threshold:
             hyde_text = self._generate_hypothetical(question)
             if hyde_text:
                 logger.debug("Stage 2 deep search (HyDE): %s", hyde_text[:100])
-                nodes = _do_retrieve(hyde_text, deep=True)
+                nodes = _do_retrieve(hyde_text, deep=True, ids=target_ids)
                 if not nodes:
                     return {"nodes": [], "sources": [], "context": ""}
 
@@ -106,18 +138,18 @@ class QueryEngine:
     # sync query (kept for compatibility)
     # ------------------------------------------------------------------
 
-    def query(self, question: str, top_k: int = 5) -> dict:
+    def query(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None) -> dict:
         """Answer a question using RAG — returns the complete answer at once."""
         # ── 缓存查询 ──────────────────────────────────────
         # 相同问题 5 分钟内直接返回缓存结果，避免重复调用 LLM
         cache = get_memory_cache()
-        key = self._cache_key(question, top_k)
+        key = self._cache_key(question, top_k, doc_ids)
         cached = cache.get(key)
         if cached is not None:
             logger.debug("RAG 缓存命中: '%s'", question[:60])
             return cached
 
-        result = self._retrieve(question, top_k)
+        result = self._retrieve(question, top_k, doc_ids)
         if result is None:
             response = {"answer": _VECTOR_STORE_DOWN_MSG, "sources": []}
             cache.set(key, response, ttl=60)  # 缓存1分钟，避免重复检索
@@ -145,9 +177,9 @@ class QueryEngine:
     # streaming query
     # ------------------------------------------------------------------
 
-    def query_stream(self, question: str, top_k: int = 5):
+    def query_stream(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None):
         """Answer a question using RAG — yields SSE JSON lines for streaming."""
-        result = self._retrieve(question, top_k)
+        result = self._retrieve(question, top_k, doc_ids)
 
         if result is None:
             yield f"data: {json.dumps({'error': _VECTOR_STORE_DOWN_MSG})}\n\n"
@@ -191,6 +223,18 @@ class QueryEngine:
     def _build_prompt(self, question: str, context: str) -> str:
         from src.utils.prompt_loader import load_prompt
         return load_prompt("rag/query", context=context, question=question)
+
+
+def _count_documents() -> int:
+    """Count documents in the knowledge base (from t_document metadata table)."""
+    try:
+        import psycopg
+        conn = psycopg.connect(settings.pg_dsn, connect_timeout=3)
+        count = conn.execute("SELECT COUNT(*) FROM t_document").fetchone()[0]
+        conn.close()
+        return count
+    except Exception:
+        return 0
 
 
 @lru_cache(maxsize=1)

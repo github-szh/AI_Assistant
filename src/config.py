@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     chunk_strategy: str = "sentence"  # fixed_size / sentence / markdown_header / recursive
     chunk_size: int = 1024
     chunk_overlap: int = 100
+    sentence_window_enabled: bool = False  # parent-child chunking for sentence/recursive strategies
+
+    # Two-level retrieval (document summary index)
+    summary_search_top_k: int = 3   # Level 1: how many relevant documents to select
+    two_stage_min_docs: int = 10    # skip Level 1 when KB has fewer docs than this
 
     # Chat context
     chat_max_rounds: int = 30

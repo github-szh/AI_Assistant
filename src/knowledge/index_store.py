@@ -123,6 +123,171 @@ def _create_chroma_store() -> Any:
     return ChromaVectorStore(chroma_collection=collection)
 
 
+# ---------------------------------------------------------------------------
+# chunk_contexts — parent chunks for Sentence Window Retrieval
+# ---------------------------------------------------------------------------
+
+def _ensure_chunk_contexts_table() -> None:
+    """Create the parent-chunk lookup table (no vector — plain text storage)."""
+    try:
+        import psycopg
+        conn = psycopg.connect(
+            host=settings.pg_host, port=settings.pg_port,
+            dbname=settings.pg_database, user=settings.pg_user,
+            password=settings.pg_password, connect_timeout=5,
+        )
+        conn.autocommit = True
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunk_contexts (
+                parent_id TEXT PRIMARY KEY,
+                doc_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                filename TEXT,
+                chunk_index INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chunk_contexts_doc_id
+            ON chunk_contexts (doc_id)
+        """)
+        conn.close()
+    except Exception as exc:
+        logger.warning("Failed to ensure chunk_contexts table: %s", exc)
+
+
+def _insert_parent_contexts(rows: list[dict]) -> None:
+    """Batch-insert parent chunks into chunk_contexts."""
+    if not rows:
+        return
+    try:
+        import psycopg
+        conn = psycopg.connect(
+            host=settings.pg_host, port=settings.pg_port,
+            dbname=settings.pg_database, user=settings.pg_user,
+            password=settings.pg_password, connect_timeout=5,
+        )
+        for r in rows:
+            conn.execute(
+                """INSERT INTO chunk_contexts (parent_id, doc_id, content, filename, chunk_index)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (parent_id) DO NOTHING""",
+                [r["parent_id"], r["doc_id"], r["content"], r.get("filename", ""), r.get("chunk_index", 0)],
+            )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning("Failed to insert parent contexts: %s", exc)
+
+
+def _fetch_parent_contexts(parent_ids: list[str]) -> dict[str, dict]:
+    """Batch-fetch parent chunks by ID. Returns {parent_id: {content, doc_id, ...}}."""
+    if not parent_ids:
+        return {}
+    try:
+        import psycopg
+        conn = psycopg.connect(
+            host=settings.pg_host, port=settings.pg_port,
+            dbname=settings.pg_database, user=settings.pg_user,
+            password=settings.pg_password, connect_timeout=5,
+        )
+        rows = conn.execute(
+            "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s)",
+            [parent_ids],
+        ).fetchall()
+        conn.close()
+        return {
+            r[0]: {"doc_id": r[1], "content": r[2], "filename": r[3], "chunk_index": r[4]}
+            for r in rows
+        }
+    except Exception:
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# doc_summaries — document-level summary index for two-level retrieval
+# ---------------------------------------------------------------------------
+
+def _ensure_summary_collection() -> None:
+    """Create the document-summary vector table."""
+    try:
+        import psycopg
+        conn = psycopg.connect(
+            host=settings.pg_host, port=settings.pg_port,
+            dbname=settings.pg_database, user=settings.pg_user,
+            password=settings.pg_password, connect_timeout=5,
+        )
+        conn.autocommit = True
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS doc_summaries (
+                doc_id TEXT PRIMARY KEY,
+                summary TEXT NOT NULL,
+                embedding vector(1024),
+                filename TEXT,
+                chunk_count INTEGER,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.close()
+    except Exception as exc:
+        logger.warning("Failed to ensure doc_summaries table: %s", exc)
+
+
+def _insert_summary(
+    doc_id: str, summary: str, embedding: list[float],
+    filename: str = "", chunk_count: int = 0,
+) -> None:
+    """Insert or update a document summary with its embedding."""
+    try:
+        import psycopg
+        conn = psycopg.connect(
+            host=settings.pg_host, port=settings.pg_port,
+            dbname=settings.pg_database, user=settings.pg_user,
+            password=settings.pg_password, connect_timeout=5,
+        )
+        conn.execute(
+            """INSERT INTO doc_summaries (doc_id, summary, embedding, filename, chunk_count)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (doc_id) DO UPDATE
+               SET summary=EXCLUDED.summary, embedding=EXCLUDED.embedding,
+                   filename=EXCLUDED.filename, chunk_count=EXCLUDED.chunk_count""",
+            [doc_id, summary, embedding, filename, chunk_count],
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning("Failed to insert summary for %s: %s", doc_id, exc)
+
+
+def _search_summaries(query_embedding: list[float], top_k: int = 3) -> list[dict]:
+    """Level 1: search document summaries, return top-k relevant doc info."""
+    try:
+        import psycopg
+        conn = psycopg.connect(
+            host=settings.pg_host, port=settings.pg_port,
+            dbname=settings.pg_database, user=settings.pg_user,
+            password=settings.pg_password, connect_timeout=5,
+        )
+        rows = conn.execute(
+            """
+            SELECT doc_id, summary, filename, chunk_count,
+                   1 - (embedding <=> %s::vector) AS similarity
+            FROM doc_summaries
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+            """,
+            [query_embedding, query_embedding, top_k],
+        ).fetchall()
+        conn.close()
+        return [
+            {"doc_id": r[0], "summary": r[1], "filename": r[2],
+             "chunk_count": r[3], "similarity": r[4]}
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
 @lru_cache(maxsize=1)
 def get_vector_store() -> Any:
     return create_vector_store()

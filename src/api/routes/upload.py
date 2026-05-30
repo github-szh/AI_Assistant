@@ -48,6 +48,7 @@ async def upload_document(
     loader: DocumentLoader = Depends(get_document_loader),
     user: dict = Depends(get_current_user),
     strategy: str | None = Query(None, description="切片策略: fixed_size / sentence / markdown_header / recursive"),
+    sentence_window: bool = Query(False, description="启用句子窗口检索（父子chunk）"),
 ):
     content = await file.read()
     file_hash = hashlib.md5(content).hexdigest()
@@ -100,8 +101,8 @@ async def upload_document(
             strategy=strategy or settings.chunk_strategy,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
+            sentence_window=sentence_window or settings.sentence_window_enabled,
         )
-        chunks = chunker.chunk(parsed)
         parser_used = parsed[0].parser_used
         page_count = len(parsed)
 
@@ -121,14 +122,37 @@ async def upload_document(
         if not summary:
             summary = " ".join(p.content for p in parsed)[:200]
 
+        # Index document summary for two-level retrieval
+        if summary:
+            try:
+                from src.knowledge.embeddings import get_embedding_manager
+                embed_mgr = get_embedding_manager()
+                summary_emb = embed_mgr.encode_query(summary)
+                from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
+                _ensure_summary_collection()
+                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks))
+            except Exception:
+                logger.warning("Failed to index document summary", exc_info=True)
+
         # Ingest into vector store
         try:
-            ingest_documents(
-                chunks,
-                doc_id=doc_id,
-                filename=filename,
-                extra_metadata={"pages": str(page_count)},
-            )
+            if chunker.sentence_window:
+                result = chunker.chunk_with_windows(parsed)
+                chunks = result.index_chunks
+                ingest_documents(
+                    result.index_chunks,
+                    doc_id=doc_id, filename=filename,
+                    extra_metadata={"pages": str(page_count)},
+                    parent_docs=result.context_chunks,
+                    child_to_parent=result.index_to_parent,
+                )
+            else:
+                chunks = chunker.chunk(parsed)
+                ingest_documents(
+                    chunks,
+                    doc_id=doc_id, filename=filename,
+                    extra_metadata={"pages": str(page_count)},
+                )
         except Exception as exc:
             logger.warning("Ingestion skipped (vector store unavailable): %s", exc)
 
@@ -175,6 +199,7 @@ async def upload_stream(
     replace_doc_id: str | None = Query(None),
     user: dict = Depends(get_current_user),
     strategy: str | None = Query(None, description="切片策略: fixed_size / sentence / markdown_header / recursive"),
+    sentence_window: bool = Query(False, description="启用句子窗口检索（父子chunk）"),
 ):
     """SSE streaming upload — reports parsing progress in real-time.
 
@@ -237,16 +262,31 @@ async def upload_stream(
                 strategy=strategy or settings.chunk_strategy,
                 chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap,
+                sentence_window=sentence_window or settings.sentence_window_enabled,
             )
-            chunks = chunker.chunk(parsed)
             parser_used = parsed[0].parser_used
             page_count = len(parsed)
 
-            yield f"data: {_json.dumps({'step':'ingest','msg':f'分块完成({len(chunks)}块)，正在写入向量库...'})}\n\n"
-            try:
-                ingest_documents(chunks, doc_id=doc_id, filename=filename)
-            except Exception as exc:
-                logger.warning("Ingestion skipped: %s", exc)
+            if chunker.sentence_window:
+                result = chunker.chunk_with_windows(parsed)
+                chunks = result.index_chunks
+                yield f"data: {_json.dumps({'step':'ingest','msg':f'分块完成({len(chunks)}子块 + {len(result.context_chunks)}父块)，正在写入向量库...'})}\n\n"
+                try:
+                    ingest_documents(
+                        result.index_chunks,
+                        doc_id=doc_id, filename=filename,
+                        parent_docs=result.context_chunks,
+                        child_to_parent=result.index_to_parent,
+                    )
+                except Exception as exc:
+                    logger.warning("Ingestion skipped: %s", exc)
+            else:
+                chunks = chunker.chunk(parsed)
+                yield f"data: {_json.dumps({'step':'ingest','msg':f'分块完成({len(chunks)}块)，正在写入向量库...'})}\n\n"
+                try:
+                    ingest_documents(chunks, doc_id=doc_id, filename=filename)
+                except Exception as exc:
+                    logger.warning("Ingestion skipped: %s", exc)
 
         # Always save to t_document
         conn = get_pg_connection()
