@@ -1,5 +1,7 @@
 import logging
 
+import httpx
+
 from src.config import settings
 from src.llm.base import BaseLLMProvider
 
@@ -17,7 +19,8 @@ class ZhipuProvider(BaseLLMProvider):
     def _ensure_client(self):
         if self._client is None:
             from zai import ZhipuAiClient
-            self._client = ZhipuAiClient(api_key=self.api_key)
+            http_client = httpx.Client(verify=settings.ssl_verify) if not settings.ssl_verify else None
+            self._client = ZhipuAiClient(api_key=self.api_key, http_client=http_client)
         return self._client
 
     def is_available(self) -> bool:

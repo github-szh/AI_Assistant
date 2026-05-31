@@ -283,6 +283,7 @@ async def upload_stream(
         chunks = []
         parser_used = "unknown"
         page_count = 0
+        summary = ""
         parse_error = None
 
         try:
