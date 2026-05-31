@@ -104,6 +104,7 @@ class QueryEngine:
 
         logger.debug("Stage 1 top_score=%.3f (threshold=%.2f)", top_score, settings.retrieval_stage1_threshold)
 
+        deep_search_used = False
         if top_score <= settings.retrieval_stage1_threshold:
             logger.info("深度搜索: max_dense=%.3f≤%.2f → HyDE+Reranker", top_score, settings.retrieval_stage1_threshold)
             hyde_text = self._generate_hypothetical(question)
@@ -111,7 +112,8 @@ class QueryEngine:
                 logger.debug("Stage 2 deep search (HyDE): %s", hyde_text[:100])
                 nodes = _do_retrieve(hyde_text, deep=True, ids=target_ids)
                 if not nodes:
-                    return {"nodes": [], "sources": [], "context": ""}
+                    return {"nodes": [], "sources": [], "context": "", "confidence": "low"}
+                deep_search_used = True
         else:
             logger.debug("快路径: max_dense=%.3f > %.2f, 跳过深度搜索", top_score, settings.retrieval_stage1_threshold)
 
@@ -135,12 +137,21 @@ class QueryEngine:
             ))
 
         elapsed = time.time() - t_start
-        logger.info("检索完成: %d条来源, 总耗时 %.1fs", len(sources), elapsed)
+
+        if top_score >= 0.70:
+            confidence = "high"
+        elif top_score >= 0.50 or deep_search_used:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        logger.info("检索完成: %d条来源, 置信度=%s, 总耗时 %.1fs", len(sources), confidence, elapsed)
 
         return {
             "nodes": top_nodes,
             "sources": sources,
             "context": "\n\n".join(context_parts),
+            "confidence": confidence,
         }
 
     # ------------------------------------------------------------------
@@ -198,8 +209,9 @@ class QueryEngine:
             yield f"data: {json.dumps({'step': 'not_found', 'msg': '知识库中没有找到相关信息。请先上传相关文档。'})}\n\n"
             return
 
-        # Push sources immediately so the frontend can show them
-        yield f"data: {json.dumps({'sources': [s.model_dump() for s in result['sources']]})}\n\n"
+        # Push sources + confidence immediately so the frontend can show them
+        confidence = result.get("confidence", "medium")
+        yield f"data: {json.dumps({'sources': [s.model_dump() for s in result['sources']], 'confidence': confidence})}\n\n"
 
         # Stream LLM answer token by token
         prompt = self._build_prompt(question, result["context"])
