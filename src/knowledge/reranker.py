@@ -1,46 +1,54 @@
-"""RAG reranker via bge-reranker-v2-m3 — improves retrieval precision.
+"""RAG reranker via bge-reranker-v2-m3 — subprocess-isolated.
 
-Loads BAAI/bge-reranker-v2-m3 locally (free, no API needed).
-Download from ModelScope: modelscope download BAAI/bge-reranker-v2-m3
+FlagReranker (FlagEmbedding) and llama_index import conflicting HuggingFace
+tokenizer backends. Loading both in the same process causes a segfault on
+inference. The fix: run the reranker in a clean subprocess that never
+imports llama_index, communicating via stdin/stdout JSON lines.
+
+Protocol:
+  IN:  {"query": "...", "candidates": ["...", ...], "top_k": 5, "min_score": null}
+  OUT: {"results": [["text", 0.95], ...]} or {"error": "..."}
 """
 
+import atexit
+import json
 import logging
+import subprocess
+import sys
 from functools import lru_cache
 
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-
-import os as _os
-_PROJECT_ROOT = __file__.rsplit("src", 1)[0]
-_RERANKER_LOCAL = _os.path.join(_PROJECT_ROOT, "data", "models", "BAAI", "bge-reranker-v2-m3")
-_RERANKER_DEFAULT = "BAAI/bge-reranker-v2-m3"
-_RERANKER_MODEL = _RERANKER_LOCAL if _os.path.isdir(_RERANKER_LOCAL) else _RERANKER_DEFAULT
+_WORKER_SCRIPT = __file__.rsplit("src", 1)[0] + "src/knowledge/reranker_worker.py"
 
 
 class Reranker:
-    """Re-rank retrieval results using bge-reranker-large.
+    """Re-rank results via bge-reranker-v2-m3 running in a subprocess.
 
-    Accepts a query and a list of candidate texts, returns (text, score)
-    pairs sorted by relevance (highest first).
+    The subprocess is spawned lazily on first use and kept alive for
+    subsequent calls, avoiding repeated model-loading overhead.
     """
 
-    def __init__(self, model_name: str = _RERANKER_MODEL):
-        self.model_name = model_name
-        self._model = None
+    def __init__(self):
+        self._proc: subprocess.Popen | None = None
 
-    def _ensure_model(self):
-        if self._model is None:
-            from FlagEmbedding import FlagReranker
+    def _ensure_worker(self):
+        """Spawn the reranker worker subprocess if not already running."""
+        if self._proc is not None and self._proc.poll() is not None:
+            # Worker died — clean up and restart
+            self._proc = None
 
-            logger.info("Loading reranker: %s", self.model_name)
-            self._model = FlagReranker(
-                self.model_name,
-                cache_dir=str(settings.models_cache_dir),
-                use_fp16=True,
+        if self._proc is None:
+            logger.info("Starting reranker subprocess: %s", _WORKER_SCRIPT)
+            self._proc = subprocess.Popen(
+                [sys.executable, "-u", _WORKER_SCRIPT],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
-        return self._model
 
     def rerank(
         self,
@@ -49,58 +57,68 @@ class Reranker:
         top_k: int = 5,
         min_score: float | None = None,
     ) -> list[tuple[str, float]]:
-        """Re-rank candidates by relevance to query.
-
-        Args:
-            query: The search query.
-            candidates: List of candidate text strings.
-            top_k: Max number of results to return.
-            min_score: Minimum relevance score threshold.
-                       Results below this are filtered out (at least 1 kept).
-
-        Returns:
-            List of (text, score) sorted by descending score.
-        """
+        """Re-rank candidates by relevance to query (via subprocess)."""
         if not candidates:
             return []
 
+        self._ensure_worker()
+
+        request = json.dumps({
+            "query": query,
+            "candidates": candidates,
+            "top_k": top_k,
+            "min_score": min_score,
+        })
+
         try:
-            model = self._ensure_model()
-            pairs = [[query, c] for c in candidates]
-            scores = model.compute_score(pairs)
-        except Exception:
-            logger.exception("Reranker inference failed, falling back to raw order")
+            self._proc.stdin.write(request + "\n")
+            self._proc.stdin.flush()
+            response_line = self._proc.stdout.readline()
+
+            if not response_line:
+                raise RuntimeError("Reranker worker closed stdout unexpectedly")
+
+            response = json.loads(response_line)
+
+            if "error" in response:
+                raise RuntimeError(response["error"])
+
+            return [(item[0], item[1]) for item in response.get("results", [])]
+
+        except (BrokenPipeError, OSError, RuntimeError) as exc:
+            logger.warning("Reranker worker failed: %s, falling back to raw order", exc)
+            # Clean up dead worker so next call re-spawns
+            self._close_worker()
             return list(zip(candidates, [0.0] * len(candidates)))[:top_k]
 
-        if isinstance(scores, float):
-            scores = [scores]
+    def _close_worker(self):
+        """Terminate the worker subprocess."""
+        if self._proc is not None:
+            try:
+                self._proc.stdin.close()
+                self._proc.stdout.close()
+                self._proc.terminate()
+                self._proc.wait(timeout=5)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+            self._proc = None
 
-        ranked = sorted(
-            zip(candidates, scores),
-            key=lambda x: x[1],
-            reverse=True,
-        )
-
-        # Filter on raw logits before normalization so the threshold has a
-        # stable meaning: raw logit > 0 = relevant (BGE cross-encoder).
-        if min_score is not None:
-            kept = []
-            for item in ranked:
-                if item[1] >= min_score or not kept:
-                    kept.append(item)
-            ranked = kept
-
-        # Score normalization: min-max to [0, 1] — applied AFTER filtering
-        # so normalized scores represent relative quality within the surviving set.
-        if len(ranked) >= 2 and ranked[0][1] != ranked[-1][1]:
-            min_s = ranked[-1][1]
-            max_s = ranked[0][1]
-            ranked = [(t, (s - min_s) / (max_s - min_s)) for t, s in ranked]
-
-        return ranked[:top_k]
+    def close(self):
+        """Public cleanup method."""
+        self._close_worker()
 
 
 @lru_cache(maxsize=1)
 def get_reranker() -> Reranker:
     """Singleton reranker instance."""
     return Reranker()
+
+
+@atexit.register
+def _cleanup():
+    """Kill the reranker worker on interpreter exit."""
+    r = get_reranker()
+    r.close()

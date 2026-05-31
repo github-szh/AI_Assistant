@@ -26,6 +26,9 @@ async def delete_document(doc_id: str, user: dict = Depends(get_current_user)):
         deleted_td = conn.execute(
             "DELETE FROM t_document WHERE doc_id = %s", [doc_id]
         ).rowcount
+        # Cascade cleanup: summary index + sentence-window parent chunks
+        conn.execute("DELETE FROM doc_summaries WHERE doc_id = %s", [doc_id])
+        conn.execute("DELETE FROM chunk_contexts WHERE doc_id = %s", [doc_id])
         conn.commit()
     finally:
         conn.close()

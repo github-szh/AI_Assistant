@@ -53,27 +53,37 @@ async def upload_document(
     content = await file.read()
     file_hash = hashlib.md5(content).hexdigest()
     file_size = len(content)
-    filename = file.filename or "unknown"
+    # Fix Windows GBK filename encoding → UTF-8
+    raw_name = file.filename or "unknown"
+    try:
+        raw_name.encode("utf-8")
+    except UnicodeEncodeError:
+        try:
+            raw_name = raw_name.encode("latin-1").decode("gbk")
+        except Exception:
+            pass
+    filename = raw_name
     ext = Path(filename).suffix
 
-    # MD5 dedup — check t_document table
+    # MD5 dedup — check t_document table, release connection immediately
     conn = get_pg_connection()
     try:
         existing = conn.execute(
             "SELECT doc_id, filename FROM t_document WHERE md5_hash=%s", [file_hash]
         ).fetchone()
-        if existing:
-            return UploadResponse(
-                doc_id=existing[0],
-                filename=filename,
-                file_type=ext,
-                status="duplicate",
-                parser_used="skipped",
-                chunks_count=None,
-                message=f"文件已存在 (doc_id: {existing[0]})",
-            )
     finally:
         conn.close()
+
+    if existing:
+        return UploadResponse(
+            doc_id=existing[0],
+            filename=filename,
+            file_type=ext,
+            status="duplicate",
+            parser_used="skipped",
+            chunks_count=None,
+            message=f"文件已存在 (doc_id: {existing[0]})",
+        )
 
     # Persist file to disk
     doc_id = uuid.uuid4().hex[:12]
@@ -97,14 +107,31 @@ async def upload_document(
         parse_error = str(exc)
 
     if parsed:
+        parser_used = parsed[0].parser_used
+        page_count = len(parsed)
+
+        # Auto-detect Sentence Window: if chunk count >= threshold
+        use_sw = sentence_window  # explicit param overrides
+        if use_sw is None or use_sw is False:  # not explicitly set to True
+            # Quick test chunk to count
+            test_chunker = Chunker(
+                strategy=strategy or settings.chunk_strategy,
+                chunk_size=settings.chunk_size,
+                chunk_overlap=settings.chunk_overlap,
+                sentence_window=False,
+            )
+            test_chunks = test_chunker.chunk(parsed)
+            if len(test_chunks) >= settings.sentence_window_auto_threshold:
+                use_sw = True
+                logger.info("Auto-enabled Sentence Window: %d chunks >= threshold %d",
+                            len(test_chunks), settings.sentence_window_auto_threshold)
+
         chunker = Chunker(
             strategy=strategy or settings.chunk_strategy,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
-            sentence_window=sentence_window or settings.sentence_window_enabled,
+            sentence_window=use_sw or False,
         )
-        parser_used = parsed[0].parser_used
-        page_count = len(parsed)
 
         # Generate AI summary
         try:
@@ -156,10 +183,10 @@ async def upload_document(
         except Exception as exc:
             logger.warning("Ingestion skipped (vector store unavailable): %s", exc)
 
-    # Always save metadata to t_document, even if parsing failed
-    conn = get_pg_connection()
+    # Save metadata to t_document (fresh connection, brief hold)
+    conn2 = get_pg_connection()
     try:
-        conn.execute(
+        conn2.execute(
             """INSERT INTO t_document
                (doc_id, filename, file_type, file_size, pages, parser_used,
                 chunks_count, summary, md5_hash)
@@ -167,9 +194,9 @@ async def upload_document(
             [doc_id, filename, ext, file_size, page_count, parser_used,
              len(chunks), summary, file_hash],
         )
-        conn.commit()
+        conn2.commit()
     finally:
-        conn.close()
+        conn2.close()
 
     if parse_error:
         status = "parse_failed"
@@ -209,7 +236,16 @@ async def upload_stream(
     content = await file.read()
     file_hash = hashlib.md5(content).hexdigest()
     file_size = len(content)
-    filename = file.filename or "unknown"
+    # Fix Windows GBK filename encoding → UTF-8
+    raw_name = file.filename or "unknown"
+    try:
+        raw_name.encode("utf-8")
+    except UnicodeEncodeError:
+        try:
+            raw_name = raw_name.encode("latin-1").decode("gbk")
+        except Exception:
+            pass
+    filename = raw_name
     ext = Path(filename).suffix
 
     async def generate():
@@ -258,14 +294,46 @@ async def upload_stream(
 
         if parsed:
             yield f"data: {_json.dumps({'step':'chunk','msg':f'解析完成，正在分块...','pages':len(parsed)})}\n\n"
+            parser_used = parsed[0].parser_used
+            page_count = len(parsed)
+
+            # Auto-detect Sentence Window
+            use_sw = sentence_window
+            if use_sw is None or use_sw is False:
+                test_chunker = Chunker(
+                    strategy=strategy or settings.chunk_strategy,
+                    chunk_size=settings.chunk_size,
+                    chunk_overlap=settings.chunk_overlap,
+                    sentence_window=False,
+                )
+                test_chunks = test_chunker.chunk(parsed)
+                if len(test_chunks) >= settings.sentence_window_auto_threshold:
+                    use_sw = True
+
             chunker = Chunker(
                 strategy=strategy or settings.chunk_strategy,
                 chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap,
-                sentence_window=sentence_window or settings.sentence_window_enabled,
+                sentence_window=use_sw or False,
             )
-            parser_used = parsed[0].parser_used
-            page_count = len(parsed)
+
+            # Generate AI summary
+            summary = ""
+            try:
+                full_text = " ".join(p.content for p in parsed)[:8000]
+                from src.llm.router import get_llm
+                llm = get_llm()
+                summary = llm.chat(
+                    messages=[{"role": "user", "content": (
+                        "请用5-8句话总结以下文档的主要内容，涵盖文档涉及的主题、关键信息和结论。用中文回答：\n\n" + full_text
+                    )}],
+                    temperature=0.0, max_tokens=500,
+                )
+                yield f"data: {_json.dumps({'step':'summary','msg':'AI摘要生成完成'})}\n\n"
+            except Exception:
+                logger.warning("AI summary generation failed", exc_info=True)
+            if not summary:
+                summary = " ".join(p.content for p in parsed)[:200]
 
             if chunker.sentence_window:
                 result = chunker.chunk_with_windows(parsed)
@@ -288,16 +356,28 @@ async def upload_stream(
                 except Exception as exc:
                     logger.warning("Ingestion skipped: %s", exc)
 
+        # Index document summary for two-level retrieval
+        if summary:
+            try:
+                from src.knowledge.embeddings import get_embedding_manager
+                embed_mgr = get_embedding_manager()
+                summary_emb = embed_mgr.encode_query(summary)
+                from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
+                _ensure_summary_collection()
+                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks) if chunks else 0)
+            except Exception:
+                logger.warning("Failed to index document summary", exc_info=True)
+
         # Always save to t_document
         conn = get_pg_connection()
         try:
             conn.execute(
                 """INSERT INTO t_document
                    (doc_id, filename, file_type, file_size, pages, parser_used,
-                    chunks_count, md5_hash)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    chunks_count, summary, md5_hash)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 [doc_id, filename, ext, file_size, page_count, parser_used,
-                 len(chunks), file_hash],
+                 len(chunks) if chunks else 0, summary, file_hash],
             )
             conn.commit()
         finally:
@@ -327,6 +407,8 @@ def _delete_document(doc_id: str) -> None:
             [doc_id],
         )
         conn.execute("DELETE FROM t_document WHERE doc_id = %s", [doc_id])
+        conn.execute("DELETE FROM doc_summaries WHERE doc_id = %s", [doc_id])
+        conn.execute("DELETE FROM chunk_contexts WHERE doc_id = %s", [doc_id])
         conn.commit()
     finally:
         conn.close()

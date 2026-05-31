@@ -58,11 +58,11 @@ class Settings(BaseSettings):
     ssl_cert_bundle: str = ""
 
     # Retrieval
-    retrieval_coarse_k: int = 20
+    retrieval_coarse_k: int = 40
     retrieval_fine_k: int = 5
     retrieval_short_query_boost: int = 10
     retrieval_short_query_len: int = 15
-    retrieval_stage1_threshold: float = 0.35  # cosine similarity, triggers Stage 2
+    retrieval_stage1_threshold: float = 0.50  # cosine similarity, triggers Stage 2 (HyDE + reranker)
     retrieval_stage2_threshold: float = 0.0  # deprecated — filtering moved into reranker
     retrieval_mode: str = "hybrid"
     rerank_min_score: float = 0.0  # raw logit threshold (BGE: >0 = relevant), applied pre-normalization
@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     chunk_size: int = 1024
     chunk_overlap: int = 100
     sentence_window_enabled: bool = False  # parent-child chunking for sentence/recursive strategies
+    sentence_window_auto_threshold: int = 20  # auto-enable when chunk count >= this value (unless explicit)
 
     # Two-level retrieval (document summary index)
     summary_search_top_k: int = 3   # Level 1: how many relevant documents to select
