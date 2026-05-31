@@ -51,7 +51,39 @@ class QueryEngine:
     # shared retrieval logic
     # ------------------------------------------------------------------
 
-    def _retrieve(self, question: str, top_k: int, doc_ids: list[str] | None = None) -> dict | None:
+    def _rewrite_question(self, question: str, messages: list[dict] | None) -> str:
+        """LLM 将依赖上下文的追问改写为独立问题。无历史时跳过。"""
+        if not messages or len(messages) <= 1:
+            return question
+
+        recent = messages[-6:]  # 最近3轮对话
+        try:
+            llm = get_llm()
+            history_text = "\n".join(
+                f"{'用户' if m['role'] == 'user' else 'AI'}: {m.get('content', '')[:200]}"
+                for m in recent
+            )
+            rewritten = llm.chat(
+                messages=[{"role": "user", "content": (
+                    "根据对话历史，将用户的追问改写为一个独立的、不依赖上下文的查询问题。"
+                    "只输出改写后的问题，不要输出任何其他内容。\n\n"
+                    f"对话历史：\n{history_text}\n\n"
+                    f"用户追问：{question}\n\n"
+                    "改写后的问题："
+                )}],
+                temperature=0.0,
+                max_tokens=100,
+            )
+            if rewritten and len(rewritten.strip()) > 2 and rewritten.strip() != question:
+                logger.debug("查询改写: '%s' → '%s'", question, rewritten.strip())
+                return rewritten.strip()
+        except Exception:
+            logger.debug("查询改写失败，使用原始查询")
+
+        return question
+
+    def _retrieve(self, question: str, top_k: int, doc_ids: list[str] | None = None,
+                  messages: list[dict] | None = None) -> dict | None:
         """Two-level retrieval with automatic summary-based document pre-filtering.
 
         Level 1 (when enabled): search doc_summaries → top-3 relevant doc_ids.
@@ -59,7 +91,12 @@ class QueryEngine:
 
         Skipped when KB has < two_stage_min_docs documents or doc_ids is already
         provided by the caller.
+
+        When messages is provided, rewrites context-dependent follow-up questions
+        into standalone queries before retrieval.
         """
+        # ── Query rewriting for multi-turn conversations ──────────
+        search_question = self._rewrite_question(question, messages)
         t_start = time.time()
 
         def _do_retrieve(search_query: str, deep: bool = False, ids: list[str] | None = None) -> list | None:
@@ -80,7 +117,7 @@ class QueryEngine:
                     from src.knowledge.embeddings import get_embedding_manager
                     from src.knowledge.index_store import _search_summaries
                     emb_mgr = get_embedding_manager()
-                    query_emb = emb_mgr.encode_query(question)
+                    query_emb = emb_mgr.encode_query(search_question)
                     relevant = _search_summaries(query_emb, settings.summary_search_top_k)
                     if relevant:
                         target_ids = [r["doc_id"] for r in relevant]
@@ -90,7 +127,7 @@ class QueryEngine:
                     logger.debug("Level 1 unavailable, falling back to full search")
 
         # ── Level 2: chunk search (with optional doc filter) ──────
-        nodes = _do_retrieve(question, ids=target_ids)
+        nodes = _do_retrieve(search_question, ids=target_ids)
         if nodes is None:
             return None  # vector store down
         if not nodes:
@@ -107,7 +144,7 @@ class QueryEngine:
         deep_search_used = False
         if top_score <= settings.retrieval_stage1_threshold:
             logger.info("深度搜索: max_dense=%.3f≤%.2f → HyDE+Reranker", top_score, settings.retrieval_stage1_threshold)
-            hyde_text = self._generate_hypothetical(question)
+            hyde_text = self._generate_hypothetical(search_question)
             if hyde_text:
                 logger.debug("Stage 2 deep search (HyDE): %s", hyde_text[:100])
                 nodes = _do_retrieve(hyde_text, deep=True, ids=target_ids)
@@ -158,7 +195,8 @@ class QueryEngine:
     # sync query (kept for compatibility)
     # ------------------------------------------------------------------
 
-    def query(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None) -> dict:
+    def query(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
+              messages: list[dict] | None = None) -> dict:
         """Answer a question using RAG — returns the complete answer at once."""
         # ── 缓存查询 ──────────────────────────────────────
         # 相同问题 5 分钟内直接返回缓存结果，避免重复调用 LLM
@@ -169,7 +207,7 @@ class QueryEngine:
             logger.debug("RAG 缓存命中: '%s'", question[:60])
             return cached
 
-        result = self._retrieve(question, top_k, doc_ids)
+        result = self._retrieve(question, top_k, doc_ids, messages)
         if result is None:
             response = {"answer": _VECTOR_STORE_DOWN_MSG, "sources": []}
             cache.set(key, response, ttl=60)  # 缓存1分钟，避免重复检索
@@ -197,9 +235,10 @@ class QueryEngine:
     # streaming query
     # ------------------------------------------------------------------
 
-    def query_stream(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None):
+    def query_stream(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
+                      messages: list[dict] | None = None):
         """Answer a question using RAG — yields SSE JSON lines for streaming."""
-        result = self._retrieve(question, top_k, doc_ids)
+        result = self._retrieve(question, top_k, doc_ids, messages)
 
         if result is None:
             yield f"data: {json.dumps({'error': _VECTOR_STORE_DOWN_MSG})}\n\n"

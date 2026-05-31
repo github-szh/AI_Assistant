@@ -65,6 +65,7 @@ class QueryRequest(BaseModel):
     question: str
     doc_ids: list[str] | None = None
     top_k: int = Field(default=5, ge=1, le=50)
+    messages: list[dict] | None = None  # 最近几轮对话，用于查询改写
 
 
 class SourceInfo(BaseModel):
