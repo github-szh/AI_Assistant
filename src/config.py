@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     retrieval_fine_k: int = 5
     retrieval_short_query_boost: int = 10
     retrieval_short_query_len: int = 15
-    retrieval_stage1_threshold: float = 0.50  # cosine similarity, triggers Stage 2 (HyDE + reranker)
+    retrieval_stage1_threshold: float = 0.65  # cosine similarity, triggers Stage 2 (HyDE + reranker)
     retrieval_stage2_threshold: float = 0.0  # deprecated — filtering moved into reranker
     retrieval_mode: str = "hybrid"
     rerank_min_score: float = 0.0  # raw logit threshold (BGE: >0 = relevant), applied pre-normalization
