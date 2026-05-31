@@ -10,6 +10,7 @@ Orchestrates the full RAG flow:
 import hashlib
 import json
 import logging
+import time
 from functools import lru_cache
 
 from src.config import settings
@@ -59,6 +60,8 @@ class QueryEngine:
         Skipped when KB has < two_stage_min_docs documents or doc_ids is already
         provided by the caller.
         """
+        t_start = time.time()
+
         def _do_retrieve(search_query: str, deep: bool = False, ids: list[str] | None = None) -> list | None:
             try:
                 if deep:
@@ -102,12 +105,15 @@ class QueryEngine:
         logger.debug("Stage 1 top_score=%.3f (threshold=%.2f)", top_score, settings.retrieval_stage1_threshold)
 
         if top_score <= settings.retrieval_stage1_threshold:
+            logger.info("深度搜索: max_dense=%.3f≤%.2f → HyDE+Reranker", top_score, settings.retrieval_stage1_threshold)
             hyde_text = self._generate_hypothetical(question)
             if hyde_text:
                 logger.debug("Stage 2 deep search (HyDE): %s", hyde_text[:100])
                 nodes = _do_retrieve(hyde_text, deep=True, ids=target_ids)
                 if not nodes:
                     return {"nodes": [], "sources": [], "context": ""}
+        else:
+            logger.debug("快路径: max_dense=%.3f > %.2f, 跳过深度搜索", top_score, settings.retrieval_stage1_threshold)
 
         top_nodes = nodes[:top_k]
 
@@ -127,6 +133,9 @@ class QueryEngine:
                 score=round(getattr(node, "score", 0), 4) if getattr(node, "score", None) else None,
                 snippet=content[:300],
             ))
+
+        elapsed = time.time() - t_start
+        logger.info("检索完成: %d条来源, 总耗时 %.1fs", len(sources), elapsed)
 
         return {
             "nodes": top_nodes,

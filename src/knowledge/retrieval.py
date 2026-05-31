@@ -67,10 +67,12 @@ def _bm25_search(query_tokens: str, top_k: int, doc_ids: list[str] | None = None
             """,
             [tsquery, tsquery] + filter_params + [top_k],
         ).fetchall()
-        return [
+        result = [
             {"node_id": r[0], "text": r[1], "metadata": r[2] or {}, "bm25_score": r[3]}
             for r in rows
         ]
+        logger.debug("BM25召回: %d条", len(result))
+        return result
     finally:
         conn.close()
 
@@ -191,6 +193,9 @@ def _expand_to_parents(child_nodes: list) -> list:
             object.__setattr__(parent, '_dense_max_score', dms)
         result.append(parent)
 
+    if parent_ids:
+        dedup_pct = (len(child_nodes) - len(result)) / len(child_nodes) * 100
+        logger.debug("SW展开: %d子 → %d父 (去重%.0f%%)", len(child_nodes), len(result), dedup_pct)
     return result
 
 
@@ -261,6 +266,8 @@ class HybridRetriever:
             for node, score in zip(dense_nodes, result.similarities):
                 if score is not None:
                     object.__setattr__(node, 'score', score)
+
+        logger.debug("向量召回: %d条", len(dense_nodes))
 
         if not dense_nodes:
             return []
