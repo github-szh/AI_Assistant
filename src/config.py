@@ -68,6 +68,34 @@ class Settings(BaseSettings):
     rerank_min_score: float = 0.0  # raw logit threshold (BGE: >0 = relevant), applied pre-normalization
     rerank_enabled: bool = True  # toggle reranker on/off
 
+    # Quality Guard 配置
+    quality_guard_enabled: bool = True
+
+    # Judge 模型配置（交叉评判——与生成模型不同，避免自我增强偏差）
+    quality_judge_provider: str = ""   # 空字符串表示跟随 llm_provider
+    quality_judge_model: str = "deepseek/deepseek-v4-flash"  # 轻量模型做评判，降低成本
+
+    # 评估维度（safety/factuality/relevance/retrieval_quality）
+    quality_eval_dimensions: list[str] = ["safety", "factuality", "relevance", "retrieval_quality"]
+
+    # 每次 LLM Judge 调用的超时秒数
+    quality_judge_timeout_s: int = 10
+
+    # 是否并行执行各维度的评估（设为 True 以降低总延迟）
+    quality_parallel_eval: bool = True
+
+    # 安全维度采用 fail-closed 策略：Judge 异常时拦截回答
+    quality_fail_closed_for_safety: bool = True
+
+    # 非安全维度采用 fail-open 策略：Judge 异常时放行并记录警告
+    quality_fail_open_for_others: bool = True
+
+    # 送入 Judge 的最大回答字符数（防止超长上下文溢出）
+    quality_max_answer_chars_for_judge: int = 4000
+
+    # Judge 超时时是否跳过质检而非阻塞整个流程
+    quality_skip_on_timeout: bool = True
+
     # Chunking
     chunk_strategy: str = "sentence"  # fixed_size / sentence / markdown_header / recursive
     chunk_size: int = 1024

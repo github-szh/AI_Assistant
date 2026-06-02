@@ -76,9 +76,28 @@ class SourceInfo(BaseModel):
     snippet: str = ""
 
 
+# ── Quality (RAG) ───────────────────────────────────
+
+class QualityVerdict(BaseModel):
+    """单个质检维度的判定结果"""
+    dimension: str = Field(description="质检维度: safety/factuality/relevance/retrieval_quality")
+    passed: bool = Field(description="是否通过")
+    score: float = Field(ge=0.0, le=1.0, description="得分 0-1")
+    details: str = Field(default="", description="详细说明/违规原因")
+
+
+class InterventionInfo(BaseModel):
+    """干预引擎的决策信息"""
+    intervened: bool = Field(description="是否被干预")
+    action: str = Field(pattern="^(none|block|rewrite|warn|degrade)$", description="执行的动作: none/block/rewrite/warn/degrade")
+    reason: str = Field(default="", description="干预原因")
+    violations: list[QualityVerdict] = Field(default_factory=list, description="所有维度的判定详情")
+
+
 class QueryResponse(BaseModel):
     answer: str
     sources: list[SourceInfo] = []
+    quality: InterventionInfo | None = None  # 质检结果（可选，向后兼容）
 
 
 # ── Agent ─────────────────────────────────────────
