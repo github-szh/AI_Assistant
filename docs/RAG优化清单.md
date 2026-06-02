@@ -220,5 +220,51 @@ src/config.py                  ← 新增 chunk_strategy/size/overlap
 src/api/routes/upload.py       ← Chunker 从硬编码改为 settings + Query 参数
 src/knowledge/query_engine.py  ← "未找到" 响应也写入缓存
 docs/chunk-strategies.md       ← 新建，四种切片策略说明文档
-前端 src/views/DocumentsView.vue ← 新增策略选择下拉框
+ 前端 src/views/DocumentsView.vue ← 新增策略选择下拉框
+```
+
+---
+
+## 2026-06-02 优化改动 — RAG 实时质量保障体系
+
+### 新增模块：质检引擎（QualityGuard）
+
+**核心文件**: `src/quality/`（新建模块，含 base/safety/factuality/relevance/retrieval_quality/keyword_filter/guard/intervention）
+
+**配置扩展**: `src/config.py` — 新增 10 个 quality_* 配置参数（quality_judge_model, quality_eval_dimensions 等）
+
+**Schema 扩展**: `src/api/schemas.py` — 新增 QualityVerdict / InterventionInfo / QueryResponse.quality
+
+**QueryEngine 集成**: `src/knowledge/query_engine.py` — query() 嵌入预生成+后生成质检，异常时 fail-open
+
+**Prompt 模板**: `prompts/quality/` — safety_judge / factuality_judge / relevance_judge 三套 YAML 评判模板
+
+**测试套件**: `tests/` — 131 个测试用例覆盖全部质检逻辑（tests/ 在 .gitignore 中）
+
+**离线评测**: `tests/test_data/eval_dataset.json`（30 对 QA）+ `scripts/run_eval.py`（离线评测脚本）+ `scripts/benchmark_quality.py`（延迟基准测试）
+
+**技术文档**: `docs/rag-quality-*.md` — 9 篇中文技术文档
+
+## 关键参数速查（更新）
+
+| 参数 | 值 | 位置 |
+|------|-----|------|
+| quality_judge_model | deepseek/deepseek-v4-flash | `config.py` |
+| quality_eval_dimensions | safety/factuality/relevance/retrieval_quality | `config.py` |
+| quality_judge_timeout_s | 10 | `config.py` |
+| quality_fail_closed_for_safety | True | `config.py` |
+| retrieval_stage1_threshold | 0.65 | `config.py` |
+
+## 已改动的文件
+
+```
+2026-06-02 改动（RAG 质量保障体系）:
+src/quality/                    ← 新建模块
+src/config.py                   ← 新增 quality_* 配置
+src/api/schemas.py              ← 新增质检模型
+src/knowledge/query_engine.py   ← 嵌入质检钩子
+prompts/quality/                ← 新建 3 个评判 Prompt
+scripts/run_eval.py             ← 新建离线评测脚本
+scripts/benchmark_quality.py    ← 新建延迟基准脚本
+docs/rag-quality-*.md           ← 9 篇中文技术文档
 ```
