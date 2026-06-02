@@ -29,6 +29,8 @@ async def list_documents(user: dict = Depends(get_current_user)):
 @router.get("/{doc_id}", response_model=DocumentDetail)
 async def get_document(doc_id: str, user: dict = Depends(get_current_user)):
     docs = _query_pg_documents()
+    if docs is None:
+        raise HTTPException(503, "数据库暂不可用，请稍后重试")
     for d in docs:
         if d.doc_id == doc_id:
             chunks = _get_chunks(doc_id)

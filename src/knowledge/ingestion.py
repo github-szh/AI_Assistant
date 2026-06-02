@@ -16,12 +16,18 @@ def ingest_documents(
     doc_id: str = "",
     filename: str = "",
     extra_metadata: dict | None = None,
+    parent_docs: list[ParsedDocument] | None = None,
+    child_to_parent: dict[int, int] | None = None,
 ) -> int:
     """Embed via configured provider, insert into pgvector.
 
     Each ParsedDocument becomes one TextNode — chunk boundaries set by
     Chunker are preserved. Tokenized text is stored in node content for
     BM25; original text is saved in metadata for the LLM and reranker.
+
+    When parent_docs is provided (Sentence Window mode), only the child
+    chunks (docs) are embedded for vector search. Parent chunks are stored
+    in the chunk_contexts table for later expansion during retrieval.
     """
     if not docs:
         logger.warning("No documents to ingest")
@@ -33,14 +39,17 @@ def ingest_documents(
 
     # 1. Create one TextNode per chunk (no re-splitting)
     nodes = []
-    for d in docs:
+    for i, d in enumerate(docs):
         metadata = {
             "doc_id": doc_id,
+            "source": doc_id,  # used by MetadataFilters (llama_index strips doc_id)
             "filename": filename,
             "parser_used": d.parser_used,
             **extra,
             **d.metadata,
         }
+        if child_to_parent is not None:
+            metadata["parent_id"] = f"{doc_id}:{child_to_parent[i]}"
         node = TextNode(text=d.content, metadata=metadata)
         nodes.append(node)
 
@@ -66,4 +75,22 @@ def ingest_documents(
         node.embedding = emb
     store.add(nodes)
     logger.info("Inserted %d nodes for doc_id=%s (%s)", len(nodes), doc_id, filename)
+
+    # 5. Store parent chunks for Sentence Window Retrieval
+    if parent_docs:
+        from src.knowledge.index_store import _ensure_chunk_contexts_table, _insert_parent_contexts
+        _ensure_chunk_contexts_table()
+        rows = [
+            {
+                "parent_id": f"{doc_id}:{i}",
+                "doc_id": doc_id,
+                "content": d.content,
+                "filename": filename,
+                "chunk_index": d.metadata.get("chunk_index", i),
+            }
+            for i, d in enumerate(parent_docs)
+        ]
+        _insert_parent_contexts(rows)
+        logger.info("Stored %d parent contexts for doc_id=%s", len(rows), doc_id)
+
     return len(nodes)

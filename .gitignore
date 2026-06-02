@@ -174,7 +174,11 @@ cython_debug/
 .pypirc
 
 # Model cache (bge-large-zh-v1.5, bge-reranker-large, ~2.6GB)
-data/
+data/chroma_db
+data/model
+data/logs
+data/models
+data/documents
 
 # Cursor
 #  Cursor is an AI-powered code editor.`.cursorignore` specifies files/directories to 

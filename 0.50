@@ -1,0 +1,4 @@
+  File "<string>", line 30
+    print(f'{q:<30} | {md:.3f}      | {¡Ü0.50
+                                       ^
+SyntaxError: invalid character '¡Ü' (U+2264)

@@ -21,7 +21,7 @@ async def query_knowledge(
 ):
     """Query the knowledge base (non-streaming)."""
     logger.info("RAG query: '%s' (top_k=%d)", req.question[:100], req.top_k)
-    result = engine.query(question=req.question, top_k=req.top_k)
+    result = engine.query(question=req.question, top_k=req.top_k, doc_ids=req.doc_ids, messages=req.messages)
     return QueryResponse(**result)
 
 
@@ -35,7 +35,7 @@ async def query_knowledge_stream(
     logger.info("RAG stream: '%s' (top_k=%d)", req.question[:100], req.top_k)
 
     async def generate():
-        for sse_line in engine.query_stream(question=req.question, top_k=req.top_k):
+        for sse_line in engine.query_stream(question=req.question, top_k=req.top_k, doc_ids=req.doc_ids, messages=req.messages):
             yield sse_line
 
     return StreamingResponse(
