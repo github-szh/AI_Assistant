@@ -16,6 +16,8 @@ from functools import lru_cache
 from src.config import settings
 from src.llm.router import get_llm
 from src.api.schemas import SourceInfo
+from src.quality.guard import QualityGuard
+from src.quality.retrieval_quality import RetrievalQualityChecker
 from src.storage.cache import get_memory_cache  # 进程内缓存，相同问题5分钟内直接返回
 
 logger = logging.getLogger(__name__)
@@ -29,8 +31,9 @@ _VECTOR_STORE_DOWN_MSG = (
 class QueryEngine:
     """End-to-end RAG query engine."""
 
-    def __init__(self, retriever=None):
+    def __init__(self, retriever=None, quality_guard: QualityGuard | None = None):
         self._retriever = retriever
+        self.quality_guard = quality_guard  # 质量保证编排器，为 None 时跳过质检
 
     @staticmethod
     def _cache_key(question: str, top_k: int, doc_ids: list[str] | None = None) -> str:
@@ -225,8 +228,46 @@ class QueryEngine:
             max_tokens=1024,
         )
         response = {"answer": answer, "sources": result["sources"]}
+
+        # ── 质量检测钩子 ──────────────────────────────────
+        # 包括预生成检查（检索质量过低时跳过 LLM 生成）和
+        # 后生成检查（安全/事实性/相关性评估）
+        if self.quality_guard is not None and settings.quality_guard_enabled:
+
+            # 预生成检查：检索质量过低时跳过 LLM 生成
+            if result.get("nodes"):
+                scores = [getattr(n, "score", 0) or 0 for n in result["nodes"]]
+                if RetrievalQualityChecker.should_skip_llm(
+                    scores, settings.retrieval_stage1_threshold,
+                ):
+                    logger.info(
+                        "质检预生成检查触发: 检索质量过低(最高分=%.3f)，跳过 LLM 生成",
+                        max(scores) if scores else 0,
+                    )
+                    response = {
+                        "answer": "知识库中没有找到足够相关的信息。请尝试换一种方式提问。",
+                        "sources": result["sources"],
+                    }
+                    cache.set(key, response, ttl=300)
+                    return response
+
+            # 后生成检查：安全/事实性/相关性评估
+            try:
+                checked_response, _ = self.quality_guard.run(
+                    query=question,
+                    answer=answer,
+                    context=result.get("context", ""),
+                    sources=result["sources"],
+                )
+                response = checked_response  # 替换为质检后的响应
+            except Exception as exc:
+                logger.warning("质量检测异常，已跳过质检: %s", exc)
+                # fail-open: 返回原始 answer，quality 字段置 None
+                response["quality"] = None
+
         # ── 写入缓存 ──────────────────────────────────────
         # TTL=300 秒（5分钟），之后重新检索生成
+        # 缓存质检后的结果（含 quality 字段），避免重复质检
         cache.set(key, response, ttl=300)
         logger.info("RAG 查询: '%s' → %d 条来源, 回答 %d 字", question, len(result["sources"]), len(answer))
         return response
