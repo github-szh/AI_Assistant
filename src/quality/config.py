@@ -11,6 +11,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# ── 检索质量检查器配置 ────────────────────────────────
+
+# 预生成检查默认阈值：低于此值的最高分视为"无有效结果"，跳过 LLM 生成。
+# 对应 src.config.settings.retrieval_stage1_threshold（0.65）的默认值。
+RETRIEVAL_QUALITY_SKIP_THRESHOLD: float = 0.65
+
 # ── 干预规则 ─────────────────────────────────────────
 
 
@@ -236,41 +242,78 @@ def get_default_safety_categories() -> list[SafetyCategory]:
       - misinformation:    虚假信息
     """
     return [
+        # ── 有害内容（8+ 关键词） ──
         SafetyCategory(
             name="harmful_content",
-            keywords=["暴力", "色情", "仇恨", "歧视", "自残", "自杀"],
+            keywords=[
+                "暴力", "色情", "仇恨", "歧视", "自残", "自杀",
+                "恐怖主义", "校园暴力", "虐待", "血腥",
+            ],
             regex_patterns=[],
-            description="有害内容：包含暴力、色情、仇恨言论等",
+            description="有害内容：包含暴力、色情、仇恨言论、恐怖主义等",
         ),
+        # ── 提示注入（6+ 关键词 + 2 条正则） ──
         SafetyCategory(
             name="prompt_injection",
-            keywords=["忽略指令", "忘记之前", "system prompt", "忽略以上"],
-            regex_patterns=[r"(?i)(ignore|forget|disregard)\s+(all\s+)?(above|previous|instructions)"],
+            keywords=[
+                "忽略指令", "忘记之前", "system prompt", "忽略以上",
+                "无视规则", "突破限制", "模拟对话",
+            ],
+            regex_patterns=[
+                # 英文注入模式：ignore/forget/disregard + above/previous/instructions
+                r"(?i)(ignore|forget|disregard)\s+(all\s+)?(above|previous|instructions)",
+                # 中文注入模式：不要遵循 + 之前的规则/指令
+                r"(?i)(不要|无需|不必)(遵循|遵守|理会)(.*?)(规则|指令|限制)",
+            ],
             description="提示注入：试图绕过系统指令的恶意输入",
         ),
+        # ── 个人信息泄露（6+ 关键词 + 身份证/手机号正则） ──
         SafetyCategory(
             name="personal_info",
-            keywords=["身份证", "手机号", "银行卡", "密码", "住址", "社保号"],
-            regex_patterns=[r"\b\d{18}[\dXx]\b", r"\b1[3-9]\d{9}\b"],
-            description="个人信息泄露：包含身份证号、手机号、银行卡号等敏感信息",
+            keywords=[
+                "身份证", "手机号", "银行卡", "密码", "住址", "社保号",
+                "护照号", "信用卡",
+            ],
+            regex_patterns=[
+                # 大陆 18 位身份证号（17 位数字 + 1 位校验码[数字或X]）
+                # 使用 (?<!\d)/(?!\d) 替代 \b，因为 Python 3 中中文汉字被视为 \w
+                r"(?<!\d)\d{17}[\dXx](?!\d)",
+                # 中国大陆手机号（11 位，1 开头）
+                r"(?<!\d)1[3-9]\d{9}(?!\d)",
+                # 邮箱地址
+                r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+            ],
+            description="个人信息泄露：包含身份证号、手机号、银行卡号、邮箱等敏感信息",
         ),
+        # ── 敏感话题（6+ 关键词） ──
         SafetyCategory(
             name="sensitive_topic",
-            keywords=["政治敏感", "宗教极端", "领土争端", "历史虚无主义"],
+            keywords=[
+                "政治敏感", "宗教极端", "领土争端", "历史虚无主义",
+                "分裂言论", "种族歧视", "邪教组织",
+            ],
             regex_patterns=[],
-            description="敏感话题：涉及政治、宗教、领土等争议性内容",
+            description="敏感话题：涉及政治、宗教、领土、种族等争议性内容",
         ),
+        # ── 违法内容（6+ 关键词） ──
         SafetyCategory(
             name="illegal_content",
-            keywords=["毒品", "赌博", "枪支", "爆炸物", "黑客", "钓鱼"],
+            keywords=[
+                "毒品", "赌博", "枪支", "爆炸物", "黑客", "钓鱼",
+                "洗钱", "走私",
+            ],
             regex_patterns=[],
-            description="违法内容：涉及毒品、赌博、枪支、黑客等非法活动",
+            description="违法内容：涉及毒品、赌博、枪支、黑客、洗钱等非法活动",
         ),
+        # ── 虚假信息（6+ 关键词） ──
         SafetyCategory(
             name="misinformation",
-            keywords=["谣言", "阴谋论", "伪科学", "虚假新闻"],
+            keywords=[
+                "谣言", "阴谋论", "伪科学", "虚假新闻",
+                "编造事实", "误导信息", "深度伪造",
+            ],
             regex_patterns=[],
-            description="虚假信息：包含谣言、阴谋论、伪科学等不实内容",
+            description="虚假信息：包含谣言、阴谋论、伪科学、深度伪造等不实内容",
         ),
     ]
 
