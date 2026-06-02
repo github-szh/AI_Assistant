@@ -98,6 +98,7 @@ class QueryEngine:
         # ── Query rewriting for multi-turn conversations ──────────
         search_question = self._rewrite_question(question, messages)
         t_start = time.time()
+        steps: list[dict] = []  # per-stage info for frontend display
 
         def _do_retrieve(search_query: str, deep: bool = False, ids: list[str] | None = None) -> list | None:
             try:
@@ -109,6 +110,7 @@ class QueryEngine:
                 return None
 
         # ── Level 1: document summary search ──────────────────────
+        t_l1 = 0.0
         target_ids = doc_ids  # caller-provided (future UI), skip Level 1
         if target_ids is None:
             doc_count = _count_documents()
@@ -121,17 +123,23 @@ class QueryEngine:
                     relevant = _search_summaries(query_emb, settings.summary_search_top_k)
                     if relevant:
                         target_ids = [r["doc_id"] for r in relevant]
-                        logger.debug("Level 1: %d summaries → %d docs selected",
-                                     doc_count, len(target_ids))
+                        t_l1 = time.time() - t_start
+                        logger.debug("Level 1: %d summaries → %d docs selected (%.2fs)",
+                                     doc_count, len(target_ids), t_l1)
+                        steps.append({"label": "文档摘要搜索", "detail": f"从 {doc_count} 篇文档中定位 {len(target_ids)} 篇相关", "time": round(t_l1, 2)})
                 except Exception:
                     logger.debug("Level 1 unavailable, falling back to full search")
 
         # ── Level 2: chunk search (with optional doc filter) ──────
+        t_coarse_start = time.time()
         nodes = _do_retrieve(search_question, ids=target_ids)
+        t_coarse = time.time() - t_coarse_start
+        if nodes:
+            steps.append({"label": "混合召回", "detail": f"向量搜索 + BM25 → RRF融合 → {len(nodes)} 条候选", "time": round(t_coarse, 2)})
         if nodes is None:
             return None  # vector store down
         if not nodes:
-            return {"nodes": [], "sources": [], "context": ""}  # nothing found
+            return {"nodes": [], "sources": [], "context": "", "steps": steps}  # nothing found
 
         # Use dense similarity for threshold check when available (RRF fusion
         # scores are in a different range and would always trigger Stage 2).
@@ -142,16 +150,29 @@ class QueryEngine:
         logger.debug("Stage 1 top_score=%.3f (threshold=%.2f)", top_score, settings.retrieval_stage1_threshold)
 
         deep_search_used = False
+        t_hyde = 0.0
+        t_deep = 0.0
         if top_score <= settings.retrieval_stage1_threshold:
+            steps.append({"label": "触发深度搜索", "detail": f"相似度 {top_score:.3f} ≤ 阈值 {settings.retrieval_stage1_threshold}", "time": None})
             logger.info("深度搜索: max_dense=%.3f≤%.2f → HyDE+Reranker", top_score, settings.retrieval_stage1_threshold)
+            t_hyde_start = time.time()
             hyde_text = self._generate_hypothetical(search_question)
+            t_hyde = time.time() - t_hyde_start
             if hyde_text:
-                logger.debug("Stage 2 deep search (HyDE): %s", hyde_text[:100])
+                logger.debug("Stage 2 deep search (HyDE): %s (%.2fs)", hyde_text[:100], t_hyde)
+                steps.append({"label": "HyDE 查询重写", "detail": f"LLM 生成假设答案辅助检索", "time": round(t_hyde, 2)})
+                t_deep_start = time.time()
                 nodes = _do_retrieve(hyde_text, deep=True, ids=target_ids)
+                t_deep = time.time() - t_deep_start
                 if not nodes:
-                    return {"nodes": [], "sources": [], "context": "", "confidence": "low"}
+                    return {"nodes": [], "sources": [], "context": "", "confidence": "low", "steps": steps}
+                steps.append({"label": "Reranker 精排", "detail": f"Cross-encoder 重排序 → {len(nodes)} 条精选", "time": round(t_deep, 2)})
                 deep_search_used = True
+            else:
+                steps.append({"label": "HyDE 降级", "detail": "生成失败，使用原始查询", "time": round(t_hyde, 2)})
+                logger.warning("HyDE returned empty, deep search skipped — using original query results")
         else:
+            steps.append({"label": "快路径", "detail": f"相似度 {top_score:.3f} > 阈值 {settings.retrieval_stage1_threshold}，跳过深度搜索", "time": None})
             logger.debug("快路径: max_dense=%.3f > %.2f, 跳过深度搜索", top_score, settings.retrieval_stage1_threshold)
 
         top_nodes = nodes[:top_k]
@@ -182,13 +203,26 @@ class QueryEngine:
         else:
             confidence = "low"
 
-        logger.info("检索完成: %d条来源, 置信度=%s, 总耗时 %.1fs", len(sources), confidence, elapsed)
+        # build per-stage timing summary
+        timing_parts = []
+        if t_l1 > 0:
+            timing_parts.append(f"L1={t_l1:.1f}s")
+        timing_parts.append(f"粗召回={t_coarse:.1f}s")
+        if t_hyde > 0:
+            timing_parts.append(f"HyDE={t_hyde:.1f}s")
+        if t_deep > 0:
+            timing_parts.append(f"深度检索={t_deep:.1f}s")
+        timing_str = ", ".join(timing_parts) if timing_parts else ""
+
+        logger.info("检索完成: %d条来源, 置信度=%s, 总耗时 %.1fs (%s)",
+                    len(sources), confidence, elapsed, timing_str)
 
         return {
             "nodes": top_nodes,
             "sources": sources,
             "context": "\n\n".join(context_parts),
             "confidence": confidence,
+            "steps": steps,
         }
 
     # ------------------------------------------------------------------
@@ -248,7 +282,10 @@ class QueryEngine:
             yield f"data: {json.dumps({'step': 'not_found', 'msg': '知识库中没有找到相关信息。请先上传相关文档。'})}\n\n"
             return
 
-        # Push sources + confidence immediately so the frontend can show them
+        # Push retrieval steps → sources → confidence so frontend can show the pipeline
+        steps = result.get("steps", [])
+        if steps:
+            yield f"data: {json.dumps({'steps': steps})}\n\n"
         confidence = result.get("confidence", "medium")
         yield f"data: {json.dumps({'sources': [s.model_dump() for s in result['sources']], 'confidence': confidence})}\n\n"
 
@@ -277,7 +314,8 @@ class QueryEngine:
                 temperature=0.3,
                 max_tokens=200,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("HyDE generation failed: %s, falling back to original query", exc)
             return None
 
     def _build_prompt(self, question: str, context: str) -> str:

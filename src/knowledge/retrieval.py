@@ -10,6 +10,7 @@ Reciprocal Rank Fusion.
 """
 
 import logging
+import time
 from functools import lru_cache
 
 from src.config import settings
@@ -53,6 +54,7 @@ def _bm25_search(query_tokens: str, top_k: int, doc_ids: list[str] | None = None
         source_filter = f"AND metadata_->>'source' IN ({placeholders})"
         filter_params = list(doc_ids)
 
+    t_bm25_inner = time.monotonic()
     conn = psycopg.connect(settings.pg_dsn, connect_timeout=5)
     try:
         rows = conn.execute(
@@ -71,7 +73,7 @@ def _bm25_search(query_tokens: str, top_k: int, doc_ids: list[str] | None = None
             {"node_id": r[0], "text": r[1], "metadata": r[2] or {}, "bm25_score": r[3]}
             for r in rows
         ]
-        logger.debug("BM25召回: %d条", len(result))
+        logger.debug("BM25召回: %d条 (%.2fs)", len(result), time.monotonic() - t_bm25_inner)
         return result
     finally:
         conn.close()
@@ -140,6 +142,7 @@ def _expand_to_parents(child_nodes: list) -> list:
 
     If nodes have no parent_id (normal chunking mode), returns them as-is.
     """
+    t_sw = time.monotonic()
     if not child_nodes:
         return []
 
@@ -195,7 +198,7 @@ def _expand_to_parents(child_nodes: list) -> list:
 
     if parent_ids:
         dedup_pct = (len(child_nodes) - len(result)) / len(child_nodes) * 100
-        logger.debug("SW展开: %d子 → %d父 (去重%.0f%%)", len(child_nodes), len(result), dedup_pct)
+        logger.debug("SW展开: %d子 → %d父 (去重%.0f%%, %.2fs)", len(child_nodes), len(result), dedup_pct, time.monotonic() - t_sw)
     return result
 
 
@@ -258,6 +261,7 @@ class HybridRetriever:
             mode="default",
             filters=filters,
         )
+        t_vec = time.monotonic()
         result = store.query(q)
         dense_nodes = result.nodes or []
 
@@ -267,7 +271,7 @@ class HybridRetriever:
                 if score is not None:
                     object.__setattr__(node, 'score', score)
 
-        logger.debug("向量召回: %d条", len(dense_nodes))
+        logger.debug("向量召回: %d条 (%.2fs)", len(dense_nodes), time.monotonic() - t_vec)
 
         if not dense_nodes:
             return []

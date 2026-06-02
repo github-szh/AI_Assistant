@@ -102,7 +102,10 @@ class DocumentLoader:
     def guess_need_ocr(self, file_path: str | Path) -> bool:
         """Quick heuristic: does this PDF likely need OCR?
 
-        Opens the first page and checks if any Chinese text can be extracted.
+        Checks the first 3 pages for Chinese text. A single-page cover (e.g.
+        image-only title page) won't fool it — if any of the first 3 pages has
+        real CJK sentences, the PDF is treated as native text.
+
         Scanned PDFs may have OCR artifacts (scattered numbers/symbols) but no
         real Chinese sentences — only count CJK characters as meaningful text.
         """
@@ -113,10 +116,14 @@ class DocumentLoader:
         try:
             import fitz
             doc = fitz.open(str(file_path))
-            text = doc[0].get_text().strip()
+            pages_to_check = min(3, len(doc))
+            for i in range(pages_to_check):
+                text = doc[i].get_text().strip()
+                cjk_chars = sum(1 for c in text if '一' <= c <= '鿿')
+                if cjk_chars >= 10:
+                    doc.close()
+                    return False  # found real text — native PDF
             doc.close()
-            # Count CJK characters to distinguish real text from OCR artifacts
-            cjk_chars = sum(1 for c in text if '一' <= c <= '鿿')
-            return cjk_chars < 10
+            return True  # no page has enough CJK — probably scanned
         except Exception:
             return True

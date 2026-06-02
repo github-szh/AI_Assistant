@@ -37,7 +37,7 @@ def _get_pool() -> ConnectionPool:
         )
         _pool = ConnectionPool(
             conninfo=dsn,
-            min_size=2,      # 最少保持 2 个空闲连接
+            min_size=4,      # 最少保持 4 个空闲连接
             max_size=20,     # 最大 20 个并发连接（原10，因连接泄漏可能耗尽）
             timeout=10,      # 等待连接的超时秒数（原5）
             max_lifetime=300,  # 连接最多存活 5 分钟后回收，防止泄漏堆积
