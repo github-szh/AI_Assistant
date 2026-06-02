@@ -287,6 +287,7 @@ class QueryEngine:
         if steps:
             yield f"data: {json.dumps({'steps': steps})}\n\n"
         confidence = result.get("confidence", "medium")
+        yield f"data: {json.dumps({'status': 'found'})}\n\n"
         yield f"data: {json.dumps({'sources': [s.model_dump() for s in result['sources']], 'confidence': confidence})}\n\n"
 
         # Stream LLM answer token by token
