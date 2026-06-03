@@ -225,6 +225,11 @@ class QueryEngine:
         logger.info("检索完成: %d条来源, 置信度=%s, 总耗时 %.1fs (%s)",
                     len(sources), confidence, elapsed, timing_str)
 
+        # ── 置信度过低时返回空结果，触发 LLM 兜底 ───────────
+        if confidence == "low" and top_score < 0.40:
+            logger.info("置信度过低(%.3f<0.40)，触发 LLM 兜底", top_score)
+            return {"nodes": [], "sources": [], "context": "", "confidence": "low"}
+
         return {
             "nodes": top_nodes,
             "sources": sources,
@@ -325,7 +330,8 @@ class QueryEngine:
             return
 
         if not result["nodes"]:
-            yield f"data: {json.dumps({'step': 'not_found', 'msg': '知识库中没有找到相关信息。请先上传相关文档。'})}\n\n"
+            confidence = result.get("confidence", "low")
+            yield f"data: {json.dumps({'step': 'not_found', 'msg': '知识库中没有找到相关信息。请先上传相关文档。', 'confidence': confidence})}\n\n"
             return
 
         # Push retrieval steps → sources → confidence so frontend can show the pipeline
@@ -435,7 +441,8 @@ def _count_documents() -> int:
         count = conn.execute("SELECT COUNT(*) FROM t_document").fetchone()[0]
         conn.close()
         return count
-    except Exception:
+    except Exception as exc:
+        logger.warning("文档计数失败: %s, 默认 0（跳过两级检索）", exc)
         return 0
 
 

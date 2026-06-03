@@ -112,7 +112,8 @@ def _get_chunks(doc_id: str) -> list[str]:
             [doc_id],
         ).fetchall()
         return [r[0][:500] for r in rows]
-    except Exception:
+    except Exception as exc:
+        logger.warning("获取文档片段失败: %s → %s", doc_id, exc)
         return []
     finally:
         if conn:

@@ -3,7 +3,7 @@ import logging
 import httpx
 
 from src.config import settings
-from src.llm.base import BaseLLMProvider
+from src.llm.base import BaseLLMProvider, ChatResult, StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +34,14 @@ class ZhipuProvider(BaseLLMProvider):
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stream: bool = False,
-    ) -> str:
+    ) -> ChatResult:
         if stream:
-            return "".join(self.chat_stream(
+            chunks = list(self.chat_stream(
                 messages, model=model, temperature=temperature, max_tokens=max_tokens,
             ))
+            text = "".join(c.text for c in chunks if c.text)
+            usage = next((c.usage for c in chunks if c.usage), None)
+            return ChatResult(text=text, usage=usage)
         client = self._ensure_client()
         response = client.chat.completions.create(
             model=model or self.default_model,
@@ -47,7 +50,15 @@ class ZhipuProvider(BaseLLMProvider):
             max_tokens=max_tokens,
             stream=False,
         )
-        return response.choices[0].message.content or ""
+        text = response.choices[0].message.content or ""
+        usage = None
+        if hasattr(response, 'usage') and response.usage:
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+        return ChatResult(text=text, usage=usage)
 
     def chat_stream(
         self,
@@ -66,5 +77,6 @@ class ZhipuProvider(BaseLLMProvider):
             stream=True,
         )
         for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            text = chunk.choices[0].delta.content if chunk.choices else None
+            if text:
+                yield StreamChunk(text=text)

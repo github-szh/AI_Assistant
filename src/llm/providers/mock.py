@@ -1,4 +1,4 @@
-from src.llm.base import BaseLLMProvider
+from src.llm.base import BaseLLMProvider, ChatResult
 
 
 class MockProvider(BaseLLMProvider):
@@ -15,6 +15,6 @@ class MockProvider(BaseLLMProvider):
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stream: bool = False,
-    ) -> str:
+    ) -> ChatResult:
         last_message = messages[-1]["content"] if messages else ""
-        return f"[mock] received: {last_message}"
+        return ChatResult(text=f"[mock] received: {last_message}")
