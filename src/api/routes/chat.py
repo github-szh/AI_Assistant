@@ -4,8 +4,8 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from src.api.routes.auth import get_current_user
 from src.api.schemas import ChatRequest, ChatResponse
+from src.api.permissions import require_permission
 from src.config import settings
 from src.llm.router import get_llm
 from src.utils.trim_messages import trim_messages
@@ -25,7 +25,7 @@ def _pg():
 
 
 @router.post("", response_model=ChatResponse)
-async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
+async def chat(req: ChatRequest, user: dict = Depends(require_permission("chat:send"))):
     llm = get_llm()
 
     # Inject system prompt from YAML template

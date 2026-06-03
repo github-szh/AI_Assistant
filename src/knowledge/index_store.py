@@ -16,11 +16,6 @@ logger = logging.getLogger(__name__)
 
 
 def create_vector_store() -> Any:
-    """Create a vector store instance, preferring pgvector over ChromaDB.
-
-    pgvector: connects to PostgreSQL. Requires PG_HOST/PG_PORT/etc in .env.
-    ChromaDB: stores vectors in a local directory. Zero-config fallback.
-    """
     pg_available = _check_pgvector()
 
     if pg_available:
@@ -32,7 +27,6 @@ def create_vector_store() -> Any:
 
 
 def _check_pgvector() -> bool:
-    """Check if pgvector is reachable."""
     try:
         import psycopg
         conn = psycopg.connect(
@@ -52,13 +46,11 @@ def _check_pgvector() -> bool:
 def _create_pgvector_store() -> Any:
     from llama_index.vector_stores.postgres import PGVectorStore
 
-    # PGVectorStore 是 llama-index 对 pgvector 的封装，
-    # 自动管理 data_documents 表的创建和向量增删查
     store = PGVectorStore(
         connection_string=settings.pg_dsn,
         async_connection_string=settings.pg_async_dsn,
         table_name="documents",
-        embed_dim=1024,  # bge-large-zh-v1.5
+        embed_dim=1024,
         schema_name="public",
         hybrid_search=True,
         text_search_config="simple",
@@ -68,16 +60,6 @@ def _create_pgvector_store() -> Any:
 
 
 def _init_pgvector_schema() -> None:
-    """Ensure pgvector extension is available and create ivfflat index.
-
-    Table creation is handled automatically by PGVectorStore's _initialize()
-    method (creates table named 'data_<table_name>').
-
-    The ivfflat index accelerates similarity search — without it, every query
-    does a full table scan (O(n)). With the index, it drops to O(log n).
-    - lists=100 is fine for up to ~1M rows; increase to ~sqrt(n) as data grows.
-    - vector_cosine_ops matches the cosine distance metric used by Zhipu embedding.
-    """
     try:
         import psycopg
         conn = psycopg.connect(
@@ -89,18 +71,8 @@ def _init_pgvector_schema() -> None:
             connect_timeout=5,
         )
         conn.autocommit = True
-        # 启用 pgvector 扩展：提供 vector 数据类型、余弦距离等向量运算
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
-        # ── ivfflat 近似最近邻搜索索引 ─────────────────────
-        # 不加索引时每次向量检索要全表扫描 O(n)，数据越多越慢。
-        # ivfflat 将向量空间划分为 lists 个簇，只搜索最近的几个簇，
-        # 时间复杂度降至 O(log n)，万级以上数据提速 10~100 倍。
-        #
-        # vector_cosine_ops：余弦相似度算子，与智谱 embedding-3 的
-        # 距离度量（cosine distance）一致，确保索引被正确使用。
-        #
-        # lists=100：质心数量，推荐 ≈ sqrt(n)。100 适合百万级以内数据。
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_data_documents_embedding
             ON data_documents
@@ -123,12 +95,9 @@ def _create_chroma_store() -> Any:
     return ChromaVectorStore(chroma_collection=collection)
 
 
-# ---------------------------------------------------------------------------
-# chunk_contexts — parent chunks for Sentence Window Retrieval
-# ---------------------------------------------------------------------------
-
 def _ensure_chunk_contexts_table() -> None:
     """Create the parent-chunk lookup table (no vector — plain text storage)."""
+    """权限与多租户：chunk_contexts 表增加 tenant_id 列"""
     try:
         import psycopg
         conn = psycopg.connect(
@@ -143,7 +112,8 @@ def _ensure_chunk_contexts_table() -> None:
                 doc_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 filename TEXT,
-                chunk_index INTEGER
+                chunk_index INTEGER,
+                tenant_id INT
             )
         """)
         conn.execute("""
@@ -157,6 +127,7 @@ def _ensure_chunk_contexts_table() -> None:
 
 def _insert_parent_contexts(rows: list[dict]) -> None:
     """Batch-insert parent chunks into chunk_contexts."""
+    """权限与多租户：插入 parent chunk 时保留 tenant_id"""
     if not rows:
         return
     try:
@@ -168,10 +139,11 @@ def _insert_parent_contexts(rows: list[dict]) -> None:
         )
         for r in rows:
             conn.execute(
-                """INSERT INTO chunk_contexts (parent_id, doc_id, content, filename, chunk_index)
-                   VALUES (%s, %s, %s, %s, %s)
+                """INSERT INTO chunk_contexts (parent_id, doc_id, content, filename, chunk_index, tenant_id)
+                   VALUES (%s, %s, %s, %s, %s, %s)
                    ON CONFLICT (parent_id) DO NOTHING""",
-                [r["parent_id"], r["doc_id"], r["content"], r.get("filename", ""), r.get("chunk_index", 0)],
+                [r["parent_id"], r["doc_id"], r["content"], r.get("filename", ""),
+                 r.get("chunk_index", 0), r.get("tenant_id")],
             )
         conn.commit()
         conn.close()
@@ -180,7 +152,6 @@ def _insert_parent_contexts(rows: list[dict]) -> None:
 
 
 def _fetch_parent_contexts(parent_ids: list[str]) -> dict[str, dict]:
-    """Batch-fetch parent chunks by ID. Returns {parent_id: {content, doc_id, ...}}."""
     if not parent_ids:
         return {}
     try:
@@ -204,12 +175,9 @@ def _fetch_parent_contexts(parent_ids: list[str]) -> dict[str, dict]:
         return {}
 
 
-# ---------------------------------------------------------------------------
-# doc_summaries — document-level summary index for two-level retrieval
-# ---------------------------------------------------------------------------
-
 def _ensure_summary_collection() -> None:
     """Create the document-summary vector table."""
+    """权限与多租户：doc_summaries 表增加 tenant_id 列"""
     try:
         import psycopg
         conn = psycopg.connect(
@@ -226,6 +194,7 @@ def _ensure_summary_collection() -> None:
                 embedding vector(1024),
                 filename TEXT,
                 chunk_count INTEGER,
+                tenant_id INT,
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
@@ -236,9 +205,10 @@ def _ensure_summary_collection() -> None:
 
 def _insert_summary(
     doc_id: str, summary: str, embedding: list[float],
-    filename: str = "", chunk_count: int = 0,
+    filename: str = "", chunk_count: int = 0, tenant_id: int | None = None,
 ) -> None:
     """Insert or update a document summary with its embedding."""
+    """权限与多租户：插入文档摘要时保存 tenant_id"""
     try:
         import psycopg
         conn = psycopg.connect(
@@ -247,12 +217,13 @@ def _insert_summary(
             password=settings.pg_password, connect_timeout=5,
         )
         conn.execute(
-            """INSERT INTO doc_summaries (doc_id, summary, embedding, filename, chunk_count)
-               VALUES (%s, %s, %s, %s, %s)
+            """INSERT INTO doc_summaries (doc_id, summary, embedding, filename, chunk_count, tenant_id)
+               VALUES (%s, %s, %s, %s, %s, %s)
                ON CONFLICT (doc_id) DO UPDATE
                SET summary=EXCLUDED.summary, embedding=EXCLUDED.embedding,
-                   filename=EXCLUDED.filename, chunk_count=EXCLUDED.chunk_count""",
-            [doc_id, summary, embedding, filename, chunk_count],
+                   filename=EXCLUDED.filename, chunk_count=EXCLUDED.chunk_count,
+                   tenant_id=EXCLUDED.tenant_id""",
+            [doc_id, summary, embedding, filename, chunk_count, tenant_id],
         )
         conn.commit()
         conn.close()
@@ -260,8 +231,10 @@ def _insert_summary(
         logger.warning("Failed to insert summary for %s: %s", doc_id, exc)
 
 
-def _search_summaries(query_embedding: list[float], top_k: int = 3) -> list[dict]:
+def _search_summaries(query_embedding: list[float], top_k: int = 3,
+                       tenant_id: int | None = None) -> list[dict]:
     """Level 1: search document summaries, return top-k relevant doc info."""
+    """权限与多租户：按租户搜索文档摘要"""
     try:
         import psycopg
         conn = psycopg.connect(
@@ -274,10 +247,11 @@ def _search_summaries(query_embedding: list[float], top_k: int = 3) -> list[dict
             SELECT doc_id, summary, filename, chunk_count,
                    1 - (embedding <=> %s::vector) AS similarity
             FROM doc_summaries
+            WHERE tenant_id = %s
             ORDER BY embedding <=> %s::vector
             LIMIT %s
             """,
-            [query_embedding, query_embedding, top_k],
+            [query_embedding, tenant_id, query_embedding, top_k],
         ).fetchall()
         conn.close()
         return [

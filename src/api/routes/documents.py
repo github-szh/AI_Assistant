@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.deps import get_pg_connection
-from src.api.routes.auth import get_current_user
+from src.api.permissions import require_permission
 from src.api.schemas import DocumentInfo, DocumentDetail, DocumentListResponse
 from src.config import settings
 
@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=DocumentListResponse)
-async def list_documents(user: dict = Depends(get_current_user)):
+async def list_documents(user: dict = Depends(require_permission("document:view"))):
     try:
-        docs = _query_pg_documents()
+        docs = _query_pg_documents(user)  # 权限与多租户：传入 user 按 tenant_id 过滤
         if docs is not None:
             return DocumentListResponse(documents=docs[:50], total=len(docs))
         return DocumentListResponse(documents=[], total=0)
@@ -27,8 +27,8 @@ async def list_documents(user: dict = Depends(get_current_user)):
 
 
 @router.get("/{doc_id}", response_model=DocumentDetail)
-async def get_document(doc_id: str, user: dict = Depends(get_current_user)):
-    docs = _query_pg_documents()
+async def get_document(doc_id: str, user: dict = Depends(require_permission("document:view"))):
+    docs = _query_pg_documents(user)  # 权限与多租户：按租户过滤
     if docs is None:
         raise HTTPException(503, "数据库暂不可用，请稍后重试")
     for d in docs:
@@ -44,7 +44,9 @@ async def get_document(doc_id: str, user: dict = Depends(get_current_user)):
     raise HTTPException(404, "文档不存在")
 
 
-def _query_pg_documents() -> list[DocumentInfo] | None:
+def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
+    # 权限与多租户：按 tenant_id 过滤文档
+    tenant_id = user.get("tenant_id")
     conn = None
     try:
         conn = get_pg_connection()
@@ -63,10 +65,11 @@ def _query_pg_documents() -> list[DocumentInfo] | None:
             FROM t_document td
             LEFT JOIN data_documents dd
                 ON COALESCE(dd.metadata_->>'source', dd.metadata_->>'doc_id') = td.doc_id
+            WHERE td.tenant_id = %s
             GROUP BY td.doc_id, td.filename, td.file_type, td.parser_used,
                      td.chunks_count, td.file_size, td.uploaded_at, td.pages, td.summary
             ORDER BY td.uploaded_at DESC
-        """).fetchall()
+        """, [tenant_id]).fetchall()
     except Exception as exc:
         logger.warning("_query_pg_documents failed: %s", exc)
         return None

@@ -6,8 +6,8 @@ import logging
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from src.api.routes.auth import get_current_user
 from src.api.schemas import ChatRequest
+from src.api.permissions import require_permission
 from src.config import settings
 from src.llm.router import get_llm
 from src.utils.trim_messages import trim_messages
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest, user: dict = Depends(get_current_user)):
+async def chat_stream(req: ChatRequest, user: dict = Depends(require_permission("chat:send"))):
 
     async def generate():
         provider = req.provider or "deepseek"
@@ -54,4 +54,3 @@ async def chat_stream(req: ChatRequest, user: dict = Depends(get_current_user)):
         generate(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
-

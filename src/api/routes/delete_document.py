@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.deps import get_pg_connection
-from src.api.routes.auth import get_current_user
+from src.api.permissions import require_permission
 from src.api.schemas import DeleteDocumentResponse
 from src.config import settings
 
@@ -15,20 +15,38 @@ logger = logging.getLogger(__name__)
 
 
 @router.delete("/{doc_id}", response_model=DeleteDocumentResponse)
-async def delete_document(doc_id: str, user: dict = Depends(get_current_user)):
+async def delete_document(doc_id: str, user: dict = Depends(require_permission("document:delete"))):
     """Delete a document from pgvector, t_document, and local filesystem."""
+    # 权限与多租户：校验租户所有权
+    tenant_id = user.get("tenant_id")
     conn = get_pg_connection()
     try:
+        own = conn.execute(
+            "SELECT 1 FROM t_document WHERE doc_id = %s AND tenant_id = %s",
+            [doc_id, tenant_id],
+        ).fetchone()
+        if not own:
+            conn.close()
+            raise HTTPException(404, f"文档 {doc_id} 不存在或无权操作")
+
         deleted_db = conn.execute(
-            "DELETE FROM data_documents WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s",
-            [doc_id],
+            """DELETE FROM data_documents
+               WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s
+               AND metadata_->>'tenant_id' = %s""",
+            [doc_id, str(tenant_id)],
         ).rowcount
         deleted_td = conn.execute(
-            "DELETE FROM t_document WHERE doc_id = %s", [doc_id]
+            "DELETE FROM t_document WHERE doc_id = %s AND tenant_id = %s",
+            [doc_id, tenant_id],
         ).rowcount
-        # Cascade cleanup: summary index + sentence-window parent chunks
-        conn.execute("DELETE FROM doc_summaries WHERE doc_id = %s", [doc_id])
-        conn.execute("DELETE FROM chunk_contexts WHERE doc_id = %s", [doc_id])
+        conn.execute(
+            "DELETE FROM doc_summaries WHERE doc_id = %s AND tenant_id = %s",
+            [doc_id, tenant_id],
+        )
+        conn.execute(
+            "DELETE FROM chunk_contexts WHERE doc_id = %s AND tenant_id = %s",
+            [doc_id, tenant_id],
+        )
         conn.commit()
     finally:
         conn.close()

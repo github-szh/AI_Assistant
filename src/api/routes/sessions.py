@@ -24,11 +24,13 @@ def _pg():
 
 @router.post("")
 async def create_session(user: dict = Depends(get_current_user)):
+    # 权限与多租户：创建会话时写入 tenant_id
+    tenant_id = user.get("tenant_id")
     sid = uuid.uuid4().hex[:16]
     conn = _pg()
     conn.execute(
-        "INSERT INTO t_session_info (id, title, user_id, created_at, updated_at) VALUES (%s,%s,%s,NOW(),NOW())",
-        [sid, "新对话", user["user_id"]],
+        "INSERT INTO t_session_info (id, title, user_id, tenant_id, created_at, updated_at) VALUES (%s,%s,%s,%s,NOW(),NOW())",
+        [sid, "新对话", user["user_id"], tenant_id],
     )
     conn.commit()
     conn.close()
@@ -37,12 +39,15 @@ async def create_session(user: dict = Depends(get_current_user)):
 
 @router.get("")
 async def list_sessions(user: dict = Depends(get_current_user)):
+    # 权限与多租户：按租户和用户过滤会话
+    tenant_id = user.get("tenant_id")
     conn = _pg()
     rows = conn.execute(
         """SELECT s.id, s.title, s.created_at, s.updated_at,
                   (SELECT count(*) FROM t_session_message m WHERE m.session_id=s.id) as msg_count
-           FROM t_session_info s WHERE s.user_id=%s ORDER BY COALESCE(s.updated_at, s.created_at) DESC""",
-        [user["user_id"]],
+           FROM t_session_info s WHERE s.user_id=%s AND s.tenant_id=%s
+           ORDER BY COALESCE(s.updated_at, s.created_at) DESC""",
+        [user["user_id"], tenant_id],
     ).fetchall()
     conn.close()
     sessions = []
@@ -61,9 +66,12 @@ async def get_session(
     before_id: int | None = None,
     user: dict = Depends(get_current_user),
 ):
+    # 权限与多租户：校验会话归属
+    tenant_id = user.get("tenant_id")
     conn = _pg()
     row = conn.execute(
-        "SELECT id, title, user_id, summary FROM t_session_info WHERE id=%s", [sid]
+        "SELECT id, title, user_id, summary FROM t_session_info WHERE id=%s AND tenant_id=%s",
+        [sid, tenant_id],
     ).fetchone()
     if not row:
         conn.close()
@@ -72,7 +80,7 @@ async def get_session(
         conn.close()
         raise HTTPException(403, "无权访问")
 
-    fetch_limit = limit + 1  # one extra to determine has_more
+    fetch_limit = limit + 1
     if before_id:
         msgs = conn.execute(
             """SELECT id, role, content FROM (
@@ -95,7 +103,7 @@ async def get_session(
 
     has_more = len(msgs) > limit
     if has_more:
-        msgs = msgs[1:]  # drop the earliest (extra) row
+        msgs = msgs[1:]
 
     return {
         "id": row[0], "title": row[1],
@@ -107,10 +115,12 @@ async def get_session(
 
 @router.patch("/{sid}")
 async def rename_session(sid: str, title: str, user: dict = Depends(get_current_user)):
+    # 权限与多租户：校验租户
+    tenant_id = user.get("tenant_id")
     conn = _pg()
     result = conn.execute(
-        "UPDATE t_session_info SET title=%s, updated_at=NOW() WHERE id=%s AND user_id=%s",
-        [title[:100], sid, user["user_id"]],
+        "UPDATE t_session_info SET title=%s, updated_at=NOW() WHERE id=%s AND user_id=%s AND tenant_id=%s",
+        [title[:100], sid, user["user_id"], tenant_id],
     )
     conn.commit()
     if result.rowcount == 0:
@@ -122,10 +132,12 @@ async def rename_session(sid: str, title: str, user: dict = Depends(get_current_
 
 @router.delete("/{sid}")
 async def delete_session(sid: str, user: dict = Depends(get_current_user)):
+    # 权限与多租户：校验租户
+    tenant_id = user.get("tenant_id")
     conn = _pg()
     result = conn.execute(
-        "DELETE FROM t_session_info WHERE id=%s AND user_id=%s",
-        [sid, user["user_id"]],
+        "DELETE FROM t_session_info WHERE id=%s AND user_id=%s AND tenant_id=%s",
+        [sid, user["user_id"], tenant_id],
     )
     conn.commit()
     if result.rowcount == 0:

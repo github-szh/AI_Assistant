@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.api.middleware import LoggingMiddleware
-from src.api.routes import health, chat, chat_stream, upload, documents, delete_document, query, sessions, auth
+from src.api.routes import health, chat, chat_stream, upload, documents, delete_document, query, sessions, auth, admin
 from src.observability.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -70,3 +70,4 @@ app.include_router(delete_document.router)
 app.include_router(query.router)
 app.include_router(sessions.router)
 app.include_router(auth.router)
+app.include_router(admin.router)

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from src.api.deps import get_document_loader, get_pg_connection
 from src.api.schemas import UploadResponse
-from src.api.routes.auth import get_current_user
+from src.api.permissions import require_permission
 from src.config import settings
 from src.knowledge.ingestion import ingest_documents
 from src.parsing.chunker import Chunker
@@ -27,13 +27,15 @@ class CheckRequest(BaseModel):
 
 
 @router.post("/check")
-async def check_duplicate(req: CheckRequest, user: dict = Depends(get_current_user)):
+async def check_duplicate(req: CheckRequest, user: dict = Depends(require_permission("document:upload"))):
     """Check if a document with the same name and size already exists."""
+    # 权限与多租户：按租户检查重复
+    tenant_id = user.get("tenant_id")
     conn = get_pg_connection()
     try:
         row = conn.execute(
-            "SELECT doc_id, filename FROM t_document WHERE filename = %s AND file_size = %s",
-            [req.filename, req.file_size],
+            "SELECT doc_id, filename FROM t_document WHERE filename = %s AND file_size = %s AND tenant_id = %s",
+            [req.filename, req.file_size, tenant_id],
         ).fetchone()
         if row:
             return {"exists": True, "doc_id": row[0], "filename": row[1]}
@@ -46,14 +48,16 @@ async def check_duplicate(req: CheckRequest, user: dict = Depends(get_current_us
 async def upload_document(
     file: UploadFile = File(...),
     loader: DocumentLoader = Depends(get_document_loader),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_permission("document:upload")),
     strategy: str | None = Query(None, description="切片策略: fixed_size / sentence / markdown_header / recursive"),
     sentence_window: bool = Query(False, description="启用句子窗口检索（父子chunk）"),
 ):
+    # 权限与多租户：获取当前用户租户ID
+    tenant_id = user.get("tenant_id")
+
     content = await file.read()
     file_hash = hashlib.md5(content).hexdigest()
     file_size = len(content)
-    # Fix Windows GBK filename encoding → UTF-8
     raw_name = file.filename or "unknown"
     try:
         raw_name.encode("utf-8")
@@ -65,11 +69,12 @@ async def upload_document(
     filename = raw_name
     ext = Path(filename).suffix
 
-    # MD5 dedup — check t_document table, release connection immediately
+    # MD5 dedup — within tenant scope
     conn = get_pg_connection()
     try:
         existing = conn.execute(
-            "SELECT doc_id, filename FROM t_document WHERE md5_hash=%s", [file_hash]
+            "SELECT doc_id, filename FROM t_document WHERE md5_hash=%s AND tenant_id=%s",
+            [file_hash, tenant_id],
         ).fetchone()
     finally:
         conn.close()
@@ -110,10 +115,8 @@ async def upload_document(
         parser_used = parsed[0].parser_used
         page_count = len(parsed)
 
-        # Auto-detect Sentence Window: if chunk count >= threshold
-        use_sw = sentence_window  # explicit param overrides
-        if use_sw is None or use_sw is False:  # not explicitly set to True
-            # Quick test chunk to count
+        use_sw = sentence_window
+        if use_sw is None or use_sw is False:
             test_chunker = Chunker(
                 strategy=strategy or settings.chunk_strategy,
                 chunk_size=settings.chunk_size,
@@ -149,7 +152,7 @@ async def upload_document(
         if not summary:
             summary = " ".join(p.content for p in parsed)[:200]
 
-        # Index document summary for two-level retrieval
+        # 权限与多租户：索引文档摘要时传入 tenant_id
         if summary:
             try:
                 from src.knowledge.embeddings import get_embedding_manager
@@ -157,11 +160,11 @@ async def upload_document(
                 summary_emb = embed_mgr.encode_query(summary)
                 from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
                 _ensure_summary_collection()
-                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks))
+                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks), tenant_id=tenant_id)
             except Exception:
                 logger.warning("Failed to index document summary", exc_info=True)
 
-        # Ingest into vector store
+        # 权限与多租户：入库时传入 tenant_id
         try:
             if chunker.sentence_window:
                 result = chunker.chunk_with_windows(parsed)
@@ -169,7 +172,7 @@ async def upload_document(
                 ingest_documents(
                     result.index_chunks,
                     doc_id=doc_id, filename=filename,
-                    extra_metadata={"pages": str(page_count)},
+                    extra_metadata={"pages": str(page_count), "tenant_id": str(tenant_id)},
                     parent_docs=result.context_chunks,
                     child_to_parent=result.index_to_parent,
                 )
@@ -178,21 +181,21 @@ async def upload_document(
                 ingest_documents(
                     chunks,
                     doc_id=doc_id, filename=filename,
-                    extra_metadata={"pages": str(page_count)},
+                    extra_metadata={"pages": str(page_count), "tenant_id": str(tenant_id)},
                 )
         except Exception as exc:
             logger.warning("Ingestion skipped (vector store unavailable): %s", exc)
 
-    # Save metadata to t_document (fresh connection, brief hold)
+    # 权限与多租户：保存文档元数据时写入 tenant_id
     conn2 = get_pg_connection()
     try:
         conn2.execute(
             """INSERT INTO t_document
                (doc_id, filename, file_type, file_size, pages, parser_used,
-                chunks_count, summary, md5_hash)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                chunks_count, summary, md5_hash, user_id, tenant_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             [doc_id, filename, ext, file_size, page_count, parser_used,
-             len(chunks), summary, file_hash],
+             len(chunks), summary, file_hash, user["user_id"], tenant_id],
         )
         conn2.commit()
     finally:
@@ -224,19 +227,17 @@ async def upload_document(
 async def upload_stream(
     file: UploadFile = File(...),
     replace_doc_id: str | None = Query(None),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_permission("document:upload")),
     strategy: str | None = Query(None, description="切片策略: fixed_size / sentence / markdown_header / recursive"),
     sentence_window: bool = Query(False, description="启用句子窗口检索（父子chunk）"),
 ):
-    """SSE streaming upload — reports parsing progress in real-time.
-
-    Set replace_doc_id to replace an existing document before re-ingesting.
-    """
+    """SSE streaming upload — reports parsing progress in real-time."""
+    # 权限与多租户：获取当前用户租户ID
+    tenant_id = user.get("tenant_id")
 
     content = await file.read()
     file_hash = hashlib.md5(content).hexdigest()
     file_size = len(content)
-    # Fix Windows GBK filename encoding → UTF-8
     raw_name = file.filename or "unknown"
     try:
         raw_name.encode("utf-8")
@@ -252,17 +253,18 @@ async def upload_stream(
         import json as _json
         yield f"data: {_json.dumps({'step':'read','msg':'读取文件中...'})}\n\n"
 
-        # Replace: delete old data first
+        # Replace: delete old data first (within tenant scope)
         if replace_doc_id:
-            _delete_document(replace_doc_id)
+            _delete_document(replace_doc_id, tenant_id)  # 权限与多租户：传入 tenant_id
             yield f"data: {_json.dumps({'step':'read','msg':'已删除旧文档，重新解析中...'})}\n\n"
 
-        # Dedup (skip if replacing)
+        # Dedup (within tenant scope)
         if not replace_doc_id:
             conn = get_pg_connection()
             try:
                 existing = conn.execute(
-                    "SELECT doc_id FROM t_document WHERE md5_hash=%s", [file_hash]
+                    "SELECT doc_id FROM t_document WHERE md5_hash=%s AND tenant_id=%s",
+                    [file_hash, tenant_id],
                 ).fetchone()
             finally:
                 conn.close()
@@ -298,7 +300,6 @@ async def upload_stream(
             parser_used = parsed[0].parser_used
             page_count = len(parsed)
 
-            # Auto-detect Sentence Window
             use_sw = sentence_window
             if use_sw is None or use_sw is False:
                 test_chunker = Chunker(
@@ -336,6 +337,9 @@ async def upload_stream(
             if not summary:
                 summary = " ".join(p.content for p in parsed)[:200]
 
+            # 权限与多租户：ingest 时传入 tenant_id 到 metadata
+            extra_meta = {"pages": str(page_count), "tenant_id": str(tenant_id)}
+
             if chunker.sentence_window:
                 result = chunker.chunk_with_windows(parsed)
                 chunks = result.index_chunks
@@ -344,6 +348,7 @@ async def upload_stream(
                     ingest_documents(
                         result.index_chunks,
                         doc_id=doc_id, filename=filename,
+                        extra_metadata=extra_meta,
                         parent_docs=result.context_chunks,
                         child_to_parent=result.index_to_parent,
                     )
@@ -353,11 +358,11 @@ async def upload_stream(
                 chunks = chunker.chunk(parsed)
                 yield f"data: {_json.dumps({'step':'ingest','msg':f'分块完成({len(chunks)}块)，正在写入向量库...'})}\n\n"
                 try:
-                    ingest_documents(chunks, doc_id=doc_id, filename=filename)
+                    ingest_documents(chunks, doc_id=doc_id, filename=filename, extra_metadata=extra_meta)
                 except Exception as exc:
                     logger.warning("Ingestion skipped: %s", exc)
 
-        # Index document summary for two-level retrieval
+        # Index document summary with tenant_id
         if summary:
             try:
                 from src.knowledge.embeddings import get_embedding_manager
@@ -365,20 +370,20 @@ async def upload_stream(
                 summary_emb = embed_mgr.encode_query(summary)
                 from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
                 _ensure_summary_collection()
-                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks) if chunks else 0)
+                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks) if chunks else 0, tenant_id=tenant_id)
             except Exception:
                 logger.warning("Failed to index document summary", exc_info=True)
 
-        # Always save to t_document
+        # Save metadata to t_document
         conn = get_pg_connection()
         try:
             conn.execute(
                 """INSERT INTO t_document
                    (doc_id, filename, file_type, file_size, pages, parser_used,
-                    chunks_count, summary, md5_hash)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    chunks_count, summary, md5_hash, user_id, tenant_id)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 [doc_id, filename, ext, file_size, page_count, parser_used,
-                 len(chunks) if chunks else 0, summary, file_hash],
+                 len(chunks) if chunks else 0, summary, file_hash, user["user_id"], tenant_id],
             )
             conn.commit()
         finally:
@@ -399,17 +404,29 @@ async def upload_stream(
     )
 
 
-def _delete_document(doc_id: str) -> None:
+def _delete_document(doc_id: str, tenant_id: int | None = None) -> None:
     """Remove a document from vector store, metadata table, and local filesystem."""
+    # 权限与多租户：按租户删除
     conn = get_pg_connection()
     try:
         conn.execute(
-            "DELETE FROM data_documents WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s",
-            [doc_id],
+            """DELETE FROM data_documents
+               WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s
+               AND metadata_->>'tenant_id' = %s""",
+            [doc_id, str(tenant_id)],
         )
-        conn.execute("DELETE FROM t_document WHERE doc_id = %s", [doc_id])
-        conn.execute("DELETE FROM doc_summaries WHERE doc_id = %s", [doc_id])
-        conn.execute("DELETE FROM chunk_contexts WHERE doc_id = %s", [doc_id])
+        conn.execute(
+            "DELETE FROM t_document WHERE doc_id = %s AND tenant_id = %s",
+            [doc_id, tenant_id],
+        )
+        conn.execute(
+            "DELETE FROM doc_summaries WHERE doc_id = %s AND tenant_id = %s",
+            [doc_id, tenant_id],
+        )
+        conn.execute(
+            "DELETE FROM chunk_contexts WHERE doc_id = %s AND tenant_id = %s",
+            [doc_id, tenant_id],
+        )
         conn.commit()
     finally:
         conn.close()
