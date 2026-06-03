@@ -27,7 +27,7 @@ async def create_session(user: dict = Depends(get_current_user)):
     sid = uuid.uuid4().hex[:16]
     conn = _pg()
     conn.execute(
-        "INSERT INTO t_session_info (id, title, user_id) VALUES (%s,%s,%s)",
+        "INSERT INTO t_session_info (id, title, user_id, created_at, updated_at) VALUES (%s,%s,%s,NOW(),NOW())",
         [sid, "新对话", user["user_id"]],
     )
     conn.commit()
@@ -41,7 +41,7 @@ async def list_sessions(user: dict = Depends(get_current_user)):
     rows = conn.execute(
         """SELECT s.id, s.title, s.created_at, s.updated_at,
                   (SELECT count(*) FROM t_session_message m WHERE m.session_id=s.id) as msg_count
-           FROM t_session_info s WHERE s.user_id=%s ORDER BY s.updated_at DESC""",
+           FROM t_session_info s WHERE s.user_id=%s ORDER BY COALESCE(s.updated_at, s.created_at) DESC""",
         [user["user_id"]],
     ).fetchall()
     conn.close()
