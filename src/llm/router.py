@@ -15,6 +15,17 @@ from src.llm.providers.mock import MockProvider
 
 logger = logging.getLogger(__name__)
 
+
+def _usage_str(usage: dict | None) -> str:
+    """Format token usage for logging. Returns '?' when unavailable."""
+    if not usage:
+        return "in:?/out:?/total:?"
+    return (
+        f"in:{usage.get('prompt_tokens', '?')}"
+        f"/out:{usage.get('completion_tokens', '?')}"
+        f"/total:{usage.get('total_tokens', '?')}"
+    )
+
 # Provider name constants
 DEEPSEEK = "deepseek"
 OPENAI = "openai"
@@ -89,6 +100,7 @@ class LLMRouter:
 
             for attempt in range(retries + 1):
                 try:
+                    t_start = time.monotonic()
                     result = prov.chat(
                         messages,
                         model=model,
@@ -96,7 +108,15 @@ class LLMRouter:
                         max_tokens=max_tokens,
                         stream=stream,
                     )
-                    return result
+                    elapsed = time.monotonic() - t_start
+                    logger.info(
+                        "LLM: provider=%s model=%s 耗时=%.2fs tokens=%s",
+                        prov_name,
+                        model or "default",
+                        elapsed,
+                        _usage_str(result.usage),
+                    )
+                    return result.text
                 except Exception as exc:
                     last_error = exc
                     logger.warning(
@@ -144,11 +164,26 @@ class LLMRouter:
                 continue
 
             try:
+                t_start = time.monotonic()
+                stream_usage = None
+
                 for chunk in prov.chat_stream(
                     messages, model=model, temperature=temperature,
                     max_tokens=max_tokens,
                 ):
-                    yield chunk
+                    if chunk.text:
+                        yield chunk.text
+                    if chunk.usage:
+                        stream_usage = chunk.usage
+
+                elapsed = time.monotonic() - t_start
+                logger.info(
+                    "LLM stream: provider=%s model=%s 耗时=%.2fs tokens=%s",
+                    prov_name,
+                    model or "default",
+                    elapsed,
+                    _usage_str(stream_usage),
+                )
                 return  # stream completed successfully
             except Exception as exc:
                 last_error = exc

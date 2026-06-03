@@ -199,7 +199,8 @@ def _fetch_parent_contexts(parent_ids: list[str]) -> dict[str, dict]:
             r[0]: {"doc_id": r[1], "content": r[2], "filename": r[3], "chunk_index": r[4]}
             for r in rows
         }
-    except Exception:
+    except Exception as exc:
+        logger.warning("父块获取失败: %d IDs → %s", len(parent_ids), exc)
         return {}
 
 
@@ -284,7 +285,8 @@ def _search_summaries(query_embedding: list[float], top_k: int = 3) -> list[dict
              "chunk_count": r[3], "similarity": r[4]}
             for r in rows
         ]
-    except Exception:
+    except Exception as exc:
+        logger.warning("摘要搜索失败: %s, 降级为全库搜索", exc)
         return []
 
 

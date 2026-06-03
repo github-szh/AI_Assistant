@@ -125,5 +125,6 @@ class DocumentLoader:
                     return False  # found real text — native PDF
             doc.close()
             return True  # no page has enough CJK — probably scanned
-        except Exception:
+        except Exception as exc:
+            logger.warning("OCR检测失败，默认启用OCR: %s", exc)
             return True

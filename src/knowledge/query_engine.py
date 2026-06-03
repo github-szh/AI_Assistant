@@ -338,7 +338,8 @@ def _count_documents() -> int:
         count = conn.execute("SELECT COUNT(*) FROM t_document").fetchone()[0]
         conn.close()
         return count
-    except Exception:
+    except Exception as exc:
+        logger.warning("文档计数失败: %s, 默认 0（跳过两级检索）", exc)
         return 0
 
 

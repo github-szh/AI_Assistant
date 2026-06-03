@@ -4,7 +4,7 @@ import logging
 from openai import OpenAI
 
 from src.config import settings
-from src.llm.base import BaseLLMProvider
+from src.llm.base import BaseLLMProvider, ChatResult, StreamChunk
 from src.utils.ssl_utils import get_httpx_client
 
 logger = logging.getLogger(__name__)
@@ -39,11 +39,14 @@ class DeepSeekProvider(BaseLLMProvider):
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stream: bool = False,
-    ) -> str:
+    ) -> ChatResult:
         if stream:
-            return "".join(self.chat_stream(
+            chunks = list(self.chat_stream(
                 messages, model=model, temperature=temperature, max_tokens=max_tokens,
             ))
+            text = "".join(c.text for c in chunks if c.text)
+            usage = next((c.usage for c in chunks if c.usage), None)
+            return ChatResult(text=text, usage=usage)
         client = self._ensure_client()
         response = client.chat.completions.create(
             model=model or self.default_model,
@@ -53,7 +56,15 @@ class DeepSeekProvider(BaseLLMProvider):
             stream=False,
             extra_body={"thinking": {"type": "disabled"}},
         )
-        return response.choices[0].message.content or ""
+        text = response.choices[0].message.content or ""
+        usage = None
+        if response.usage:
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+        return ChatResult(text=text, usage=usage)
 
     def chat_stream(
         self,
@@ -70,11 +81,19 @@ class DeepSeekProvider(BaseLLMProvider):
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
+            stream_options={"include_usage": True},
             extra_body={"thinking": {"type": "disabled"}},
         )
         for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            text = chunk.choices[0].delta.content if chunk.choices else None
+            if text:
+                yield StreamChunk(text=text)
+            if hasattr(chunk, 'usage') and chunk.usage:
+                yield StreamChunk(usage={
+                    "prompt_tokens": chunk.usage.prompt_tokens,
+                    "completion_tokens": chunk.usage.completion_tokens,
+                    "total_tokens": chunk.usage.total_tokens,
+                })
 
 
 class DeepSeekProviderV4(DeepSeekProvider):
@@ -90,7 +109,7 @@ class DeepSeekProviderV4(DeepSeekProvider):
         stream: bool = False,
         reasoning_effort: str = "high",
         thinking_enabled: bool = True,
-    ) -> str:
+    ) -> ChatResult:
         client = self._ensure_client()
 
         extra_body = {}
@@ -107,4 +126,12 @@ class DeepSeekProviderV4(DeepSeekProvider):
             extra_body=extra_body,
         )
 
-        return response.choices[0].message.content or ""
+        text = response.choices[0].message.content or ""
+        usage = None
+        if response.usage:
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+        return ChatResult(text=text, usage=usage)

@@ -1,10 +1,14 @@
 """Text chunking strategies for downstream RAG ingestion."""
 
+import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Iterator
 
 from src.parsing.loader import ParsedDocument
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,6 +48,7 @@ class Chunker:
         self.sentence_window = sentence_window
 
     def chunk(self, docs: list[ParsedDocument]) -> list[ParsedDocument]:
+        t_start = time.monotonic()
         chunks = []
         for doc in docs:
             texts = self._split(doc.content)
@@ -58,6 +63,9 @@ class Chunker:
                     },
                     parser_used=doc.parser_used,
                 ))
+        elapsed = time.monotonic() - t_start
+        logger.info("切割完成: %d页 → %d块, 策略=%s (%.2fs)",
+                    len(docs), len(chunks), self.strategy, elapsed)
         return chunks
 
     # ------------------------------------------------------------------
@@ -73,14 +81,17 @@ class Chunker:
         Only sentence and recursive strategies support windowed output.
         Other strategies fall back to index = context (no window expansion).
         """
+        t_start = time.monotonic()
         if self.strategy not in ("sentence", "recursive"):
-            # Fallback: child = parent for strategies that don't split on sentences
             flat = self.chunk(docs)
-            return ChunkResult(
+            result = ChunkResult(
                 index_chunks=flat,
                 context_chunks=flat,
                 index_to_parent={i: i for i in range(len(flat))},
             )
+            elapsed = time.monotonic() - t_start
+            logger.info("切割完成(无窗口): %d页 → %d块 (%.2fs)", len(docs), len(flat), elapsed)
+            return result
 
         index_chunks = []
         context_chunks = []
@@ -107,6 +118,9 @@ class Chunker:
             for child_i, parent_i in mapping.items():
                 index_to_parent[base_child + child_i] = base_parent + parent_i
 
+        elapsed = time.monotonic() - t_start
+        logger.info("SW切割: %d页 → %d子块 + %d父块, 策略=%s (%.2fs)",
+                    len(docs), len(index_chunks), len(context_chunks), self.strategy, elapsed)
         return ChunkResult(index_chunks, context_chunks, index_to_parent)
 
     def _split_with_windows(self, text: str) -> tuple[list[str], list[str], dict[int, int]]:
