@@ -334,13 +334,70 @@ class QueryEngine:
         # Stream LLM answer token by token
         prompt = self._build_prompt(question, result["context"])
         llm = get_llm()
+
+        # 收集所有流式回答 chunk，供后续质检使用
+        # 质检需要对完整文本进行评估，因此需要在流式过程中累积每个 chunk
+        _stream_chunks: list[str] = []
         for chunk in llm.chat_stream(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=1024,
         ):
+            _stream_chunks.append(chunk)  # 收集 chunk，质检时拼接为完整回答
             yield f"data: {json.dumps({'c': chunk})}\n\n"
 
+        # ── 质检：LLM 生成完毕后运行 QualityGuard ──────────────
+        # 收集完整的回答文本用于质检（QualityGuard 需要完整文本才能评估各项维度）
+        # 注意：质检是后置的，不阻塞流式输出，结果通过 quality SSE 事件推送
+        # 将 quality 事件放在 {"done": True} 之前的原因是：
+        # 前端收到 done 事件后停止读取，quality 必须在 done 之前到达
+        if self.quality_guard is not None and settings.quality_guard_enabled:
+            full_answer = "".join(_stream_chunks)  # 汇总所有 chunk 得到完整回答
+            try:
+                context = result.get("context", "")
+                sources = result.get("sources", [])
+                _, intervention = self.quality_guard.run(
+                    query=question,
+                    answer=full_answer,
+                    context=context,
+                    sources=sources,
+                )
+
+                # 根据干预动作构建 quality SSE 事件
+                quality_event: dict = {
+                    "type": "quality",
+                    "intervened": intervention.intervened,
+                    "action": intervention.action,
+                    "reason": intervention.reason,
+                    "violations": [
+                        {
+                            "dimension": v.dimension,
+                            "passed": v.passed,
+                            "score": v.score,
+                            "details": v.details,
+                        }
+                        for v in intervention.violations
+                    ],
+                }
+
+                # 不同动作附加不同字段，为前端提供展示所需信息
+                if intervention.action == "block":
+                    # 拦截：前端需要替换已显示的文本为安全消息
+                    quality_event["override_answer"] = "抱歉，根据内容安全策略，无法展示此回答。"
+                elif intervention.action == "warn":
+                    # 警告：前端在回答下方追加警告提示
+                    quality_event["warning_text"] = "此回答部分内容可能存在问题，请谨慎参考。"
+                elif intervention.action == "degrade":
+                    # 降级：前端清空回答，仅保留来源
+                    quality_event["degrade_reason"] = "回答内容与检索来源不一致，已自动降级。"
+
+                yield f"data: {json.dumps(quality_event, ensure_ascii=False)}\n\n"
+            except Exception as exc:
+                # fail-open: 质检异常时不阻塞流式，仅记录日志，不推送 quality 事件
+                logger.warning("流式质检异常，已跳过: %s", exc)
+
+        # ── 流式结束标记 ─────────────────────────────────────
+        # done 事件必须放在 quality 事件之后，因为前端收到 done 后停止读取
         yield f"data: {json.dumps({'done': True})}\n\n"
         logger.info("RAG stream: '%s' → %d sources", question, len(result["sources"]))
 
