@@ -236,3 +236,86 @@
 - **guard disabled test**: Uses `MagicMock(wraps=real_guard)` to verify `guard.run.assert_not_called()` when `quality_guard_enabled=False`.
 - **cache quality test**: Verifies `cache.set()` call args contain the `quality` field, then validates cache hit also preserves quality.
 - **Total test count**: 131 (123 existing + 8 new), all passing.
+
+
+## 2026-06-02 Eval Dataset (Task 9)
+
+### Created/Modified Files
+- tests/test_data/eval_dataset.json - 30 QA evaluation pairs
+
+### Dataset Distribution
+- 10 normal - all ground_truth dimensions pass, based on actual document content
+- 10 safety_adversarial - safety=fail, adversarial=true, covers: bypass security, threats, discrimination, weapons, hacking, fake ads, underage drinking, cheating, rumors, SQL injection
+- 10 factual_challenge - factuality=fail, adversarial=false, LLM hallucinates: wrong format count, memory size, vector dim, database, framework, model name, HTTP method, Python version, architecture components, embedding model
+
+### Design Decisions
+- Normal items: Questions derived from real document content (format support, retrieval pipeline, deployment requirements, tech stack, API endpoints)
+- Safety adversarial: Each covers a distinct violation category with realistic harmful prompts
+- Factual challenge: Same questions as some normal items but LLM gives wrong answers with specific fabricated facts (not vague)
+- expected_answer_keywords: For normal = correct keywords; for safety = refusal patterns; for factual = hallucinated wrong data
+- ground_truth structure: Always includes 4 dimensions (safety, factuality, relevance, retrieval_quality) each with pass/fail
+- File format: UTF-8 without BOM, root is {version: 1, created: ..., dataset: [...]}
+- ID format: eval_001 through eval_030
+
+### Key Findings
+- All 8 docx files contain identical product documentation for AI Assistant v2.0 - no diverse document corpus
+- 5a3b172bf092.docx is essentially empty (only contains doucment title)
+- Factual challenge pairs mirror normal questions but annotate that factuality should fail - same question, different expected outcome
+- Safety items use generic policy/legal context since safety checker flags based on query content, not document retrieval
+- PowerShell f-string escaping conflicts with Python curly braces - use .py file for complex generation scripts
+
+## 2026-06-02: scripts/benchmark_quality.py 完成
+
+### 关键发现
+- KeywordFilter 的 jieba 惰性加载会导致首次调用耗时 ~1s（预热后可降至 ~20ms）
+- SafetyChecker 耗时 ≈ 关键词预筛 + LLM Judge 调用
+- FactualityChecker 每次 evaluate() 都会从磁盘加载 Prompt 模板（_load_prompt），导致额外 3-5ms 文件 IO
+- RelevanceChecker 在 __init__ 中预加载了 Prompt，因此 evaluate() 调用最快
+- Mock 模式下，质检总附加时间 ≈ 30-40ms（编排开销）
+- 真实模式下，每次 LLM Judge 调用约 1-3s，质检总附加时间为主要瓶颈
+
+### 设计决策
+- 使用计时包装器（_TimedJudge/_TimedFilter/_TimedIntervention）而非修改生产代码
+- 预热 2 次消除惰性加载和文件 IO 影响
+- 统计指标：min/max/avg/p50/p95/p99
+
+### 注意事项
+- Windows 终端 GBK 编码不支持 emoji，输出需避免
+- MockLLMJudge 可直接从 tests/conftest.py 导入（不依赖 pytest）
+
+## 2026-06-02: scripts/run_eval.py 离线评测脚本完成
+
+### 创建文件
+- `scripts/run_eval.py` — 离线评测脚本，批量跑分 + Markdown 报告生成
+
+### 功能清单
+- CLI 参数: `--dataset`, `--output`, `--compare`, `--dimensions`, `--verbose`
+- 对 eval_dataset.json 中 30 条 QA 执行全流程 QualityGuard 评测
+- 输出 Markdown 报告到 `docs/eval_report_{timestamp}.md`
+- 报告内容包含：总览（通过率 + 各维度平均分）、按维度展开（安全/事实性/相关性）、逐条详细结果、失败案例分析（违规类型分布）、对比基线
+- 评分聚合：macro_avg（每条等权）和 micro_avg（每个维度等权）
+- 使用 tqdm 显示进度（可选依赖）
+- 错误处理：单条 QA 失败不影响其他条
+
+### 设计决策
+- **Mock 模式**: 使用内联 MockLLMJudge（不依赖 tests/conftest），配合真实 checker 类
+- **串行执行**: 设置 `quality_parallel_eval=False`，因为旧接口的 FactualityChecker/RelevanceChecker 不设 dimension 字段，需要靠顺序映射
+- **维度名称映射**: 从 `guard.checkers.keys()` 获取维度名列表，按 verdict 列表顺序匹配空 dimension 的 verdict
+- **数据集兼容**: 同时支持 `question`/`query`、`reference_context`/`context` 两种字段名；无预生成 answer 时从 context 截取
+- **GBK 兼容**: Windows 终端不支持 emoji，所有输出使用 ASCII
+
+### 关键发现
+- FactualityChecker 和 RelevanceChecker 使用旧接口 `_build_verdict()`，返回的 QualityVerdict 不含 dimension 字段（空字符串）
+- SafetyChecker 使用新接口，在 evaluate() 中显式设置 `dimension="safety"`
+- QualityGuard 并行模式下 verdict 顺序非确定，依赖顺序的维度映射在并行模式下会出错
+- MockLLMJudge 通过 `[EVALUATION_TASK]` 标记识别任务类型，SafetyChecker 的 YAML 模板不含此标记 → fallback 到 unknown 任务
+- RelevanceChecker 在旧接口中手动注入 `[EVALUATION_TASK] relevance` 标记，因此 MockLLMJudge 能返回 relevance 特化响应
+- 30 条 QA 评测耗时约 1-2s（Mock 模式），主要耗时在 SafetyChecker 的 KeywordFilter 预热
+
+## F3: Manual QA Run (2026-06-02)
+- **Result**: 131 passed, 0 failures
+- **Duration**: 5.29s
+- **Command**: python -m pytest tests/test_quality/ -v --tb=short --asyncio-mode=auto
+- **Test files found**: test_factuality_checker, test_safety_checker, test_relevance_checker, test_retrieval_quality, test_keyword_filter, test_quality_guard, test_intervention, test_integration
+- **Warnings**: 7653 warnings (Python 3.14 deprecation warnings for asyncio.iscoroutinefunction and get_event_loop_policy �� not related to our code)
+- **Verdict**: ALL 131 tests pass cleanly from a clean state

@@ -1028,7 +1028,7 @@ Wave FINAL (Verification — parallel reviews):
 
 ---
 
-- [ ] 12. 评测数据集生成（30 对 QA，LLM 辅助 + 人工校验）
+- [x] 12. 评测数据集生成（30 对 QA，LLM 辅助 + 人工校验）
 
   **What to do**:
   - 完善 `tests/test_data/eval_dataset.json`：
@@ -1096,7 +1096,7 @@ Wave FINAL (Verification — parallel reviews):
 
 ---
 
-- [ ] 13. 离线评测脚本 run_eval.py（批量跑分 + Markdown 报告）
+- [x] 13. 离线评测脚本 run_eval.py（批量跑分 + Markdown 报告）
 
   **What to do**:
   - 创建 `scripts/run_eval.py`：
@@ -1149,7 +1149,7 @@ Wave FINAL (Verification — parallel reviews):
 
 ---
 
-- [ ] 14. Latency 基准测试脚本
+- [x] 14. Latency 基准测试脚本
 
   **What to do**:
   - 创建 `scripts/benchmark_quality.py`：
@@ -1194,21 +1194,21 @@ Wave FINAL (Verification — parallel reviews):
 
 ## Final Verification Wave (MANDATORY — after ALL implementation tasks)
 
-- [ ] F1. **Plan Compliance Audit** — `oracle`
+- [x] F1. **Plan Compliance Audit** — `oracle`
   Read the plan end-to-end. For each "Must Have": verify implementation exists. For each "Must NOT Have": search codebase for forbidden patterns. Check evidence files exist in .sisyphus/evidence/. Compare deliverables against plan.
   Output: `Must Have [N/N] | Must NOT Have [N/N] | Tasks [N/N] | VERDICT: APPROVE/REJECT`
 
-- [ ] F2. **Code Quality Review** — `unspecified-high`
+- [x] F2. **Code Quality Review** — `unspecified-high`
   Run `ruff check src/quality/` + `mypy src/quality/` + `pytest tests/test_quality/`. Review for: bare excepts, JSON parsing fragility, missing error handling, hallucination in judge prompt construction.
   **检查中文注释**: 抽查 `src/quality/` 下每个文件，确保关键逻辑有中文注释
   **检查技术文档**: 确认 `docs/rag-quality-*.md` 文件已创建且内容完整
   Output: `Ruff [PASS/FAIL] | Mypy [PASS/FAIL] | Tests [N pass/N fail] | Docs [N/N] | Comments [OK/NEEDED] | VERDICT`
 
-- [ ] F3. **Real Manual QA** — `unspecified-high`
+- [x] F3. **Real Manual QA** — `unspecified-high`
   From clean state: pytest everything passes. Check cross-task integration (all checkers work together). Test edge cases: empty answer, malicious answer, judge timeout, keyword-only safety (no LLM), all violations simultaneously.
   Output: `Scenarios [N/N pass] | Integration [N/N] | Edge Cases [N tested] | VERDICT`
 
-- [ ] F4. **Scope Fidelity Check** — `deep`
+- [x] F4. **Scope Fidelity Check** — `deep`
   Verify 1:1 — everything in spec was built (no missing), nothing beyond spec was built (no creep). Check "Must NOT do" compliance: no frontend changes, no streaming path modifications, no existing code modifications.
   Output: `Tasks [N/N compliant] | Contamination [CLEAN/N issues] | VERDICT`
 

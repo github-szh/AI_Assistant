@@ -21,3 +21,15 @@
 | Dimension priority | Defined in `_DIMENSION_PRIORITY` dict, not inferred from rule priority | Rules can have different priorities than dimension ordering; verdicts sorted by dimension priority first, then matched against sorted rules |
 | execute() response shape | Always returns `{answer, sources, quality}` dict with `quality` from `InterventionInfo.model_dump()` | Ensures consistent response structure regardless of action; QueryEngine can flatten or pass through |
 | `rules` default | `None` â†’ uses `get_default_intervention_rules()`, empty list `[]` â†’ no rules | `None` vs `[]` distinction allows explicit disabling of all rules |
+
+## F4: Scope Fidelity Check (2026-06-02)
+
+**Verdict: APPROVE ? ¡ª Zero scope creep detected**
+
+Key findings:
+- All 33 files changed in quality commits match plan deliverables exactly
+- 6 false positives in HEAD~10..HEAD diff were pre-quality modifications (not scope creep)
+- Must NOT do rules all pass: no frontend, no streaming, no existing code modification, no dashboard
+- query_engine.py changes limited to __init__ param + query() hook only
+- Test files exist on disk (tests/test_quality/) but are gitignored (tests/* in .gitignore)
+

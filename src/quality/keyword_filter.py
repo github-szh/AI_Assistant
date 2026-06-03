@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 from src.quality.config import (
     KeywordMatch,
@@ -75,8 +74,8 @@ class KeywordFilter:
 
     def __init__(
         self,
-        categories: Optional[list[SafetyCategory]] = None,
-        yaml_path: Optional[str] = None,
+        categories: list[SafetyCategory] | None = None,
+        yaml_path: str | None = None,
     ):
         """初始化 KeywordFilter。
 

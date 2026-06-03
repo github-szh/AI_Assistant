@@ -1,59 +1,41 @@
 {
-  "active_plan": "C:\\Users\\p1325970\\AILearn\\Code_ZhiHui\\AI_Assistant_zhwee\\.sisyphus\\plans\\rag-quality-assurance.md",
-  "started_at": "2026-06-02T10:13:56.361Z",
+  "active_plan": "C:\\Users\\p1325970\\AILearn\\Code_ZhiHui\\AI_Assistant_zhwee\\.sisyphus\\plans\\streaming-quality-integration.md",
+  "started_at": "2026-06-03T02:56:05.815Z",
   "session_ids": [
     "ses_1785fc571ffeBbgu00CdEmUr7r"
   ],
   "session_origins": {
     "ses_1785fc571ffeBbgu00CdEmUr7r": "direct"
   },
-  "plan_name": "rag-quality-assurance",
+  "plan_name": "streaming-quality-integration",
   "agent": "atlas",
   "task_sessions": {
     "todo:1": {
       "task_key": "todo:1",
       "task_label": "1",
-      "task_title": "测试基础设施搭建（conftest.py + Mock Judge + fixtures）",
-      "session_id": "ses_1782b816fffe0hrrJC5vFL8pyp",
+      "task_title": "Schema + SSE 事件格式定义",
+      "session_id": "ses_174959f41ffe66JPNj30Uu241X",
       "agent": "Sisyphus-Junior",
       "category": "quick",
-      "updated_at": "2026-06-02T10:24:38.079Z"
+      "updated_at": "2026-06-03T02:58:43.092Z"
     },
-    "todo:5": {
-      "task_key": "todo:5",
-      "task_label": "5",
-      "task_title": "QualityJudge 基类 + SafetyChecker（含关键词预筛）",
-      "session_id": "ses_1780e1f03ffeciH786e3DjqyrG",
+    "todo:2": {
+      "task_key": "todo:2",
+      "task_label": "2",
+      "task_title": "query_stream() 质检钩子",
+      "session_id": "ses_174943820ffe5aLAe4Vo4sN9Cz",
       "agent": "Sisyphus-Junior",
       "category": "deep",
-      "updated_at": "2026-06-02T11:10:25.759Z"
+      "updated_at": "2026-06-03T03:01:41.061Z"
     },
-    "todo:9": {
-      "task_key": "todo:9",
-      "task_label": "9",
-      "task_title": "InterventionEngine（违规→动作映射 + 执行 + 响应改写）",
-      "session_id": "ses_177f826a9ffe4Lp76RBn77DEPG",
-      "agent": "Sisyphus-Junior",
-      "category": "deep",
-      "updated_at": "2026-06-02T11:16:00.430Z"
-    },
-    "todo:10": {
-      "task_key": "todo:10",
-      "task_label": "10",
-      "task_title": "质检与 QueryEngine 集成（QualityGuard 编排 + query() 钩子）",
-      "session_id": "ses_177f3111bffevzx3ezxFLzaVyj",
-      "agent": "Sisyphus-Junior",
-      "category": "deep",
-      "updated_at": "2026-06-02T11:23:22.767Z"
-    },
-    "todo:11": {
-      "task_key": "todo:11",
-      "task_label": "11",
-      "task_title": "集成测试（端到端：质检+干预全流程）",
-      "session_id": "ses_177ec8d8fffeNL00T6m2PXNON2",
+    "todo:3": {
+      "task_key": "todo:3",
+      "task_label": "3",
+      "task_title": "流式质检测试",
+      "session_id": "ses_174912f0effe5emHIiRbK4LFbE",
       "agent": "Sisyphus-Junior",
       "category": "unspecified-high",
-      "updated_at": "2026-06-02T11:29:31.892Z"
+      "updated_at": "2026-06-03T03:05:16.705Z"
     }
   }
 }

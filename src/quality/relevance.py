@@ -21,7 +21,6 @@ RelevanceChecker 是三个评判中最简单的：只比较 query 和 answer，�
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from src.quality.base import QualityJudge, QualityVerdict
 
@@ -49,7 +48,7 @@ class RelevanceChecker(QualityJudge):
         self,
         llm_provider,
         prompt_dir: str = "prompts/quality",
-        judge_model: Optional[str] = None,
+        judge_model: str | None = None,
         threshold: float = 0.7,
     ):
         """初始化 RelevanceChecker。
@@ -69,7 +68,7 @@ class RelevanceChecker(QualityJudge):
         self,
         query: str,
         answer: str,
-        context: Optional[str] = None,  # 兼容接口，但不使用
+        context: str | None = None,  # 兼容接口，但不使用
         **kwargs,
     ) -> QualityVerdict:
         """执行相关性评估。

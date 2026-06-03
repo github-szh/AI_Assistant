@@ -343,7 +343,7 @@ def load_safety_categories_from_yaml(path: str) -> list[SafetyCategory]:
     except ImportError:
         raise ImportError("需要安装 PyYAML：pip install pyyaml")
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     if not isinstance(data, dict) or "safety_categories" not in data:

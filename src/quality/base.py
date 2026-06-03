@@ -320,7 +320,7 @@ class QualityJudge(ABC):
         prompts_dir = self.config.get("prompts_dir", "prompts")
         path = f"{prompts_dir}/quality/{template_name}.yaml"
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
         if not data:
@@ -370,7 +370,7 @@ class QualityJudge(ABC):
         if not path.exists():
             raise FileNotFoundError(f"Prompt 模板文件不存在: {path}")
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
         if not isinstance(data, dict) or len(data) == 0:
