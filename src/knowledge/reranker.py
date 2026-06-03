@@ -15,6 +15,7 @@ import json
 import logging
 import subprocess
 import sys
+import time
 from functools import lru_cache
 
 from src.config import settings
@@ -41,6 +42,7 @@ class Reranker:
             self._proc = None
 
         if self._proc is None:
+            t0 = time.monotonic()
             logger.info("Starting reranker subprocess: %s", _WORKER_SCRIPT)
             self._proc = subprocess.Popen(
                 [sys.executable, "-u", _WORKER_SCRIPT],
@@ -49,6 +51,7 @@ class Reranker:
                 stderr=subprocess.PIPE,
                 text=True,
             )
+            logger.info("Reranker worker started in %.1fs", time.monotonic() - t0)
 
     def rerank(
         self,
@@ -70,6 +73,7 @@ class Reranker:
             "min_score": min_score,
         })
 
+        t0 = time.monotonic()
         try:
             self._proc.stdin.write(request + "\n")
             self._proc.stdin.flush()
@@ -83,10 +87,14 @@ class Reranker:
             if "error" in response:
                 raise RuntimeError(response["error"])
 
-            return [(item[0], item[1]) for item in response.get("results", [])]
+            results = [(item[0], item[1]) for item in response.get("results", [])]
+            logger.debug("Reranker scored %d candidates → %d results in %.2fs",
+                         len(candidates), len(results), time.monotonic() - t0)
+            return results
 
         except (BrokenPipeError, OSError, RuntimeError) as exc:
-            logger.warning("Reranker worker failed: %s, falling back to raw order", exc)
+            logger.warning("Reranker worker failed after %.1fs: %s, falling back to raw order",
+                          time.monotonic() - t0, exc)
             # Clean up dead worker so next call re-spawns
             self._close_worker()
             return list(zip(candidates, [0.0] * len(candidates)))[:top_k]
@@ -105,6 +113,20 @@ class Reranker:
                 except Exception:
                     pass
             self._proc = None
+
+    def warmup(self):
+        """Pre-load the reranker model at startup to avoid first-query latency.
+
+        Spawns the worker subprocess and sends a dummy request to force model
+        loading (~8-10s cold start). Without this, the first deep-search query
+        pays the loading cost.
+        """
+        self._ensure_worker()
+        try:
+            self.rerank("", ["warmup"], top_k=1)
+            logger.info("Reranker worker warmed up successfully")
+        except Exception as exc:
+            logger.warning("Reranker warm-up failed: %s", exc)
 
     def close(self):
         """Public cleanup method."""
