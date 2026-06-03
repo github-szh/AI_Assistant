@@ -451,7 +451,7 @@ class QualityJudge(ABC):
             raise ValueError(result.get("reasoning", "JSON 解析失败"))
         return result
 
-    def _build_verdict(self, response: dict) -> QualityVerdict:
+    def _build_verdict(self, response: dict, dimension: str = "") -> QualityVerdict:
         """【兼容】将 LLM 返回的 JSON 字典转换为 QualityVerdict。
 
         Args:
@@ -465,6 +465,7 @@ class QualityJudge(ABC):
 
         return QualityVerdict(
             passed=bool(response.get("passed", False)),
+            dimension=dimension or response.get("dimension", ""),
             score=float(response.get("score", 0.0)),
             reasoning=str(response.get("reasoning", "")),
             metadata=metadata,

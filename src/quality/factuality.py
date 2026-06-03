@@ -119,6 +119,7 @@ class FactualityChecker(QualityJudge):
             logger.info("事实性评估跳过：回答为'不知道'类表述")
             return QualityVerdict(
                 passed=True,
+                dimension="factuality",
                 score=1.0,
                 reasoning="模型诚实地表示不知道，不判为幻觉",
                 metadata={"note": "IDK answer detected, auto-passed"},
@@ -130,6 +131,7 @@ class FactualityChecker(QualityJudge):
             logger.info("事实性评估跳过：缺少检索上下文")
             return QualityVerdict(
                 passed=True,
+                dimension="factuality",
                 score=0.0,
                 reasoning="无检索上下文可验证",
                 metadata={"note": "empty context, cannot verify but not hallucination"},
@@ -161,7 +163,7 @@ class FactualityChecker(QualityJudge):
             result = self._parse_json_response(response_text)
 
             # 3f. 构造 QualityVerdict 返回
-            return self._build_verdict(result)
+            return self._build_verdict(result, dimension="factuality")
 
         except Exception as e:
             # ── Step 4: fail-open 策略 — 异常时放行 ──
@@ -172,6 +174,7 @@ class FactualityChecker(QualityJudge):
             )
             return QualityVerdict(
                 passed=True,
+                dimension="factuality",
                 score=0.0,
                 reasoning=f"事实性评估异常，按 fail-open 策略放行: {e}",
                 metadata={"error": str(e)},

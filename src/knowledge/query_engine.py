@@ -180,6 +180,11 @@ class QueryEngine:
 
         top_nodes = nodes[:top_k]
 
+        # PGVector returns cosine distance (0=same). Convert to similarity (1=same)
+        # for confidence calculation and SourceInfo scores.
+        if top_score is not None:
+            top_score = 1.0 - top_score
+
         context_parts = []
         sources = []
         for i, node in enumerate(top_nodes):
@@ -193,7 +198,7 @@ class QueryEngine:
                 doc_id=node.metadata.get("doc_id", ""),
                 filename=node.metadata.get("filename", ""),
                 chunk_index=node.metadata.get("chunk_index"),
-                score=round(getattr(node, "score", 0), 4) if getattr(node, "score", None) else None,
+                score=round(1.0 - getattr(node, "score", 0), 4) if getattr(node, "score", None) else None,
                 snippet=content[:300],
             ))
 
@@ -436,4 +441,24 @@ def _count_documents() -> int:
 
 @lru_cache(maxsize=1)
 def get_query_engine() -> QueryEngine:
-    return QueryEngine()
+    """创建 QueryEngine 实例，自动挂载 QualityGuard 质量检测模块。"""
+    from src.quality.guard import QualityGuard
+    from src.quality.intervention import InterventionEngine
+    from src.quality.safety import SafetyChecker
+    from src.quality.factuality import FactualityChecker
+    from src.quality.relevance import RelevanceChecker
+
+    try:
+        llm = get_llm()
+        checkers = {
+            "safety": SafetyChecker(llm_provider=llm),
+            "factuality": FactualityChecker(llm_provider=llm),
+            "relevance": RelevanceChecker(llm_provider=llm),
+        }
+        intervention = InterventionEngine()
+        quality_guard = QualityGuard(checkers, intervention, settings)
+        logger.info("QualityGuard 已挂载 (%d 个质检器)", len(checkers))
+        return QueryEngine(quality_guard=quality_guard)
+    except Exception as exc:
+        logger.warning("QualityGuard 初始化失败（质检功能不可用）: %s", exc)
+        return QueryEngine()

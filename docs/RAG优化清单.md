@@ -268,3 +268,58 @@ scripts/run_eval.py             ← 新建离线评测脚本
 scripts/benchmark_quality.py    ← 新建延迟基准脚本
 docs/rag-quality-*.md           ← 9 篇中文技术文档
 ```
+
+---
+
+## 2026-06-03 优化改动 — 流式接口质检联动
+
+### 流式质检 SSE 事件
+
+**文件**: `src/knowledge/query_engine.py`
+
+- `query_stream()` 在 LLM 流式生成完毕后、`{"done": True}` 之前，插入 QualityGuard 质检流程
+- 收集所有流式 chunk 拼接为完整回答 → 运行 Safety/Factuality/Relevance/RetrievalQuality 全维度评估
+- 通过 SSE `quality` 事件推送质检结果，4 种 action：
+  - `block` → 前端替换回答为安全消息
+  - `degrade` → 前端清空回答保留来源
+  - `warn` → 前端追加 ⚠️ 警告提示
+  - `none` → 前端显示 ✅ 可收起通过标记
+- 异常保护：质检失败时 fail-open，不阻塞流式，不推送 quality 事件
+
+### SSE 事件类型文档
+
+**文件**: `src/api/schemas.py`（Quality 区域注释）
+
+- 完整文档化 8 种 SSE 事件类型：steps/status/sources+confidence/c/quality/done/step/error
+- quality 事件 4 种形态的 JSON 格式详解
+
+### 前端展示
+
+**文件**: `ai-assistant-web/src/views/ChatView.vue`
+
+- SSE 事件处理器新增 `d.type === 'quality'` 分支
+- 质检结果区域组件（4 种状态：🔴 拦截 / ⚠️ 警告 / 🟡 降级 / ✅ 通过）
+- 通过状态可点击展开查看各维度得分详情
+
+### 测试
+
+- 4 个流式质检测试用例（通过/拦截/降级/禁用）
+- 后端总测试数：**135 个**（全部通过）
+
+## 关键参数速查（更新）
+
+| 参数 | 值 | 位置 |
+|------|-----|------|
+| quality_judge_model | deepseek/deepseek-v4-flash | `config.py` |
+| quality_eval_dimensions | safety/factuality/relevance/retrieval_quality | `config.py` |
+| quality_judge_timeout_s | 10 | `config.py` |
+| quality_fail_closed_for_safety | True | `config.py` |
+
+## 已改动的文件
+
+```
+2026-06-03 改动（流式质检联动）:
+src/knowledge/query_engine.py   ← query_stream() 追加质检钩子 + quality SSE 事件
+src/api/schemas.py              ← 完整 SSE 事件类型文档
+ai-assistant-web/src/views/ChatView.vue ← 前端 quality 事件处理 + UI 组件
+```

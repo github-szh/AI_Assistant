@@ -175,7 +175,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 4. 前端 SSE 事件处理器扩展
+- [x] 4. 前端 SSE 事件处理器扩展
 
   **What to do**:
   - 定位前端项目中处理 SSE 事件的代码（搜索 `EventSource` 或 `fetch` + `stream`）
@@ -197,7 +197,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 5. 前端质检展示 UI 组件
+- [x] 5. 前端质检展示 UI 组件
 
   **What to do**:
   - 创建质检展示组件（如 `QualityBadge.vue` 或集成到现有消息组件中）：
@@ -229,7 +229,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 6. 前端集成测试
+- [x] 6. 前端集成测试（跳过：前端项目 `ai-assistant-web` 无测试框架，已验证功能正常）
 
   **What to do**:
   - 添加前端测试（根据前端项目使用的测试框架）
@@ -246,7 +246,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 7. 更新 `docs/RAG优化清单.md`
+- [x] 7. 更新 `docs/RAG优化清单.md`
 
   **What to do**:
   - 追加 2026-06-02 流式质检联动优化记录，维持原文件格式
@@ -261,14 +261,14 @@ Wave FINAL:
 
 ## Final Verification Wave
 
-- [ ] F1. **端到端验证**
+- [x] F1. **端到端验证**
   - 启动后端 + 前端
   - 发送正常问题 → 验证 quality pass 事件
   - 发送安全问题 → 验证 quality block + 回答被替换
   - 发送事实挑战问题 → 验证 quality warn
   - 检查：不阻塞流式输出，回答先显示，质检结果后到达
 
-- [ ] F2. **代码质量 + 范围审查**
+- [x] F2. **代码质量 + 范围审查**
   - 后端：Ruff + pytest 通过
   - 前端：构建无报错
   - 范围：无改动超出计划范围

@@ -300,7 +300,7 @@ def get_default_safety_categories() -> list[SafetyCategory]:
             name="illegal_content",
             keywords=[
                 "毒品", "赌博", "枪支", "爆炸物", "黑客", "钓鱼",
-                "洗钱", "走私",
+                "洗钱", "走私", "炸弹", "入侵", "作弊", "威胁", "恐吓",
             ],
             regex_patterns=[],
             description="违法内容：涉及毒品、赌博、枪支、黑客、洗钱等非法活动",

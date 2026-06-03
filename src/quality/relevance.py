@@ -112,7 +112,7 @@ class RelevanceChecker(QualityJudge):
             response = self._parse_json_response(response_text)
 
             # Step 4: 构建结构化评估结果
-            verdict = self._build_verdict(response)
+            verdict = self._build_verdict(response, dimension="relevance")
 
             # Step 5: 分数低于阈值时记录警告（但不禁用）
             if verdict.score < self._threshold:
@@ -136,6 +136,7 @@ class RelevanceChecker(QualityJudge):
             )
             return QualityVerdict(
                 passed=True,
+                dimension="relevance",
                 score=0.7,  # 默认中等偏上分数（保守放行）
                 reasoning=f"相关性评估调用失败，已自动放行。错误: {str(e)}",
             )
