@@ -135,7 +135,8 @@ async def login(req: LoginRequest):
         """SELECT u.id, u.username, u.password_hash, u.display_name, u.role, u.tenant_id, t.name
            FROM t_user u
            LEFT JOIN t_tenant t ON u.tenant_id = t.id
-           WHERE u.username = %s AND u.is_active = TRUE""",
+           WHERE u.username = %s AND u.is_active = TRUE
+             AND (u.tenant_id IS NULL OR t.is_active = TRUE)""",
         [req.username],
     ).fetchone()
     conn.close()
