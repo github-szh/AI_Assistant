@@ -123,19 +123,30 @@ async def update_tenant(tenant_id: int, req: TenantUpdateRequest, user: dict = D
 
 @router.get("/users")
 async def list_users(user: dict = Depends(require_permission("tenant:users:manage"))):
-    """权限与多租户：获取租户下的用户列表"""
-    tenant_id = user.get("tenant_id")
+    """权限与多租户：获取用户列表，super_admin 看全部，其他角色看本租户"""
     conn = get_pg_connection()
     try:
-        rows = conn.execute(
-            """SELECT id, username, display_name, role, is_active, created_at
-               FROM t_user WHERE tenant_id = %s ORDER BY id""",
-            [tenant_id],
-        ).fetchall()
+        if user.get("role") == "super_admin":
+            rows = conn.execute(
+                """SELECT u.id, u.username, u.display_name, u.role, u.is_active, u.created_at,
+                          u.tenant_id, t.name
+                   FROM t_user u LEFT JOIN t_tenant t ON u.tenant_id = t.id
+                   ORDER BY u.id"""
+            ).fetchall()
+        else:
+            tenant_id = user.get("tenant_id")
+            rows = conn.execute(
+                """SELECT u.id, u.username, u.display_name, u.role, u.is_active, u.created_at,
+                          u.tenant_id, t.name
+                   FROM t_user u LEFT JOIN t_tenant t ON u.tenant_id = t.id
+                   WHERE u.tenant_id = %s ORDER BY u.id""",
+                [tenant_id],
+            ).fetchall()
         return {"users": [{
             "id": r[0], "username": r[1], "display_name": r[2],
             "role": r[3], "is_active": r[4],
             "created_at": r[5].isoformat() if r[5] else "",
+            "tenant_id": r[6], "tenant_name": r[7] or "",
         } for r in rows]}
     finally:
         conn.close()
