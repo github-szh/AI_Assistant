@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 def create_vector_store() -> Any:
+    """Create a vector store instance, preferring pgvector over ChromaDB.
+
+    pgvector: connects to PostgreSQL. Requires PG_HOST/PG_PORT/etc in .env.
+    ChromaDB: stores vectors in a local directory. Zero-config fallback.
+    """
     pg_available = _check_pgvector()
 
     if pg_available:
@@ -27,6 +32,7 @@ def create_vector_store() -> Any:
 
 
 def _check_pgvector() -> bool:
+    """Check if pgvector is reachable."""
     try:
         import psycopg
         conn = psycopg.connect(
@@ -46,11 +52,13 @@ def _check_pgvector() -> bool:
 def _create_pgvector_store() -> Any:
     from llama_index.vector_stores.postgres import PGVectorStore
 
+    # PGVectorStore 是 llama-index 对 pgvector 的封装，
+    # 自动管理 data_documents 表的创建和向量增删查
     store = PGVectorStore(
         connection_string=settings.pg_dsn,
         async_connection_string=settings.pg_async_dsn,
         table_name="documents",
-        embed_dim=1024,
+        embed_dim=1024,  # bge-large-zh-v1.5
         schema_name="public",
         hybrid_search=True,
         text_search_config="simple",
@@ -60,6 +68,16 @@ def _create_pgvector_store() -> Any:
 
 
 def _init_pgvector_schema() -> None:
+    """Ensure pgvector extension is available and create ivfflat index.
+
+    Table creation is handled automatically by PGVectorStore's _initialize()
+    method (creates table named 'data_<table_name>').
+
+    The ivfflat index accelerates similarity search — without it, every query
+    does a full table scan (O(n)). With the index, it drops to O(log n).
+    - lists=100 is fine for up to ~1M rows; increase to ~sqrt(n) as data grows.
+    - vector_cosine_ops matches the cosine distance metric used by Zhipu embedding.
+    """
     try:
         import psycopg
         conn = psycopg.connect(
@@ -71,8 +89,18 @@ def _init_pgvector_schema() -> None:
             connect_timeout=5,
         )
         conn.autocommit = True
+        # 启用 pgvector 扩展：提供 vector 数据类型、余弦距离等向量运算
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
+        # ── ivfflat 近似最近邻搜索索引 ─────────────────────
+        # 不加索引时每次向量检索要全表扫描 O(n)，数据越多越慢。
+        # ivfflat 将向量空间划分为 lists 个簇，只搜索最近的几个簇，
+        # 时间复杂度降至 O(log n)，万级以上数据提速 10~100 倍。
+        #
+        # vector_cosine_ops：余弦相似度算子，与智谱 embedding-3 的
+        # 距离度量（cosine distance）一致，确保索引被正确使用。
+        #
+        # lists=100：质心数量，推荐 ≈ sqrt(n)。100 适合百万级以内数据。
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_data_documents_embedding
             ON data_documents
@@ -94,7 +122,9 @@ def _create_chroma_store() -> Any:
     collection = client.get_or_create_collection("ai_documents")
     return ChromaVectorStore(chroma_collection=collection)
 
-
+# ---------------------------------------------------------------------------
+# chunk_contexts — parent chunks for Sentence Window Retrieval
+# ---------------------------------------------------------------------------
 def _ensure_chunk_contexts_table() -> None:
     """Create the parent-chunk lookup table (no vector — plain text storage)."""
     """权限与多租户：chunk_contexts 表增加 tenant_id 列"""
@@ -150,7 +180,7 @@ def _insert_parent_contexts(rows: list[dict]) -> None:
     except Exception as exc:
         logger.warning("Failed to insert parent contexts: %s", exc)
 
-
+"""Batch-fetch parent chunks by ID. Returns {parent_id: {content, doc_id, ...}}."""
 def _fetch_parent_contexts(parent_ids: list[str]) -> dict[str, dict]:
     if not parent_ids:
         return {}
@@ -174,7 +204,9 @@ def _fetch_parent_contexts(parent_ids: list[str]) -> dict[str, dict]:
         logger.warning("父块获取失败: %d IDs → %s", len(parent_ids), exc)
         return {}
 
-
+# ---------------------------------------------------------------------------
+# doc_summaries — document-level summary index for two-level retrieval
+# ---------------------------------------------------------------------------
 def _ensure_summary_collection() -> None:
     """Create the document-summary vector table."""
     """权限与多租户：doc_summaries 表增加 tenant_id 列"""

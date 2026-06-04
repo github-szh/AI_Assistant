@@ -51,7 +51,11 @@ class QueryEngine:
             self._retriever = get_retriever()
         return self._retriever
 
+    # ------------------------------------------------------------------
+    # shared retrieval logic
+    # ------------------------------------------------------------------
     def _rewrite_question(self, question: str, messages: list[dict] | None) -> str:
+        """LLM 将依赖上下文的追问改写为独立问题。无历史时跳过。"""
         if not messages or len(messages) <= 1:
             return question
 
@@ -83,6 +87,17 @@ class QueryEngine:
 
     def _retrieve(self, question: str, top_k: int, doc_ids: list[str] | None = None,
                   messages: list[dict] | None = None, tenant_id: int | None = None) -> dict | None:
+        """Two-level retrieval with automatic summary-based document pre-filtering.
+
+               Level 1 (when enabled): search doc_summaries → top-3 relevant doc_ids.
+               Level 2: search chunk index within those documents → RRF → expand → rerank.
+
+               Skipped when KB has < two_stage_min_docs documents or doc_ids is already
+               provided by the caller.
+
+               When messages is provided, rewrites context-dependent follow-up questions
+               into standalone queries before retrieval.
+               """
         """Retrieve relevant chunks — two-stage: coarse BM25 → fine rerank."""
         # 权限与多租户：按租户隔离的检索
         search_question = self._rewrite_question(question, messages)
@@ -98,6 +113,7 @@ class QueryEngine:
                 logger.warning("Vector store not available: %s", exc)
                 return None
 
+        # ── Level 1: document summary search ──────────────────────
         t_l1 = 0.0
         target_ids = doc_ids
         if target_ids is None:
@@ -118,16 +134,19 @@ class QueryEngine:
                 except Exception:
                     logger.debug("Level 1 unavailable, falling back to full search")
 
+        # ── Level 2: chunk search (with optional doc filter) ──────
         t_coarse_start = time.time()
         nodes = _do_retrieve(search_question, ids=target_ids)
         t_coarse = time.time() - t_coarse_start
         if nodes:
             steps.append({"label": "混合召回", "detail": f"向量搜索 + BM25 → RRF融合 → {len(nodes)} 条候选", "time": round(t_coarse, 2)})
         if nodes is None:
-            return None
+            return None  # vector store down
         if not nodes:
-            return {"nodes": [], "sources": [], "context": "", "steps": steps}
+            return {"nodes": [], "sources": [], "context": "", "steps": steps} # nothing found
 
+        # Use dense similarity for threshold check when available (RRF fusion
+        # scores are in a different range and would always trigger Stage 2).
         top_score = getattr(nodes[0], "_dense_max_score", None)
         if top_score is None:
             top_score = getattr(nodes[0], "score", 0) or 0
@@ -162,6 +181,8 @@ class QueryEngine:
 
         top_nodes = nodes[:top_k]
 
+        # PGVector returns cosine distance (0=same). Convert to similarity (1=same)
+        # for confidence calculation and SourceInfo scores.
         if top_score is not None:
             top_score = 1.0 - top_score
 
@@ -216,6 +237,9 @@ class QueryEngine:
             "steps": steps,
         }
 
+    # ------------------------------------------------------------------
+    # sync query (kept for compatibility)
+    # ------------------------------------------------------------------
     def query(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
               messages: list[dict] | None = None, tenant_id: int | None = None) -> dict:
         """Full RAG pipeline: retrieve + generate, with caching."""
@@ -232,11 +256,11 @@ class QueryEngine:
         result = self._retrieve(question, top_k, doc_ids, messages, tenant_id)
         if result is None:
             response = {"answer": _VECTOR_STORE_DOWN_MSG, "sources": []}
-            cache.set(key, response, ttl=60)
+            cache.set(key, response, ttl=60)  # 缓存1分钟，避免重复检索
             return response
         if not result["nodes"]:
             response = {"answer": "知识库中没有找到相关信息。请先上传相关文档。", "sources": []}
-            cache.set(key, response, ttl=60)
+            cache.set(key, response, ttl=60)   # 缓存1分钟，避免重复检索
             return response
 
         prompt = self._build_prompt(question, result["context"])
@@ -248,7 +272,11 @@ class QueryEngine:
         )
         response = {"answer": answer, "sources": result["sources"]}
 
+        # ── 质量检测钩子 ──────────────────────────────────
+        # 包括预生成检查（检索质量过低时跳过 LLM 生成）和
+        # 后生成检查（安全/事实性/相关性评估）
         if self.quality_guard is not None and settings.quality_guard_enabled:
+            # 预生成检查：检索质量过低时跳过 LLM 生成
             if result.get("nodes"):
                 scores = [getattr(n, "score", 0) or 0 for n in result["nodes"]]
                 if RetrievalQualityChecker.should_skip_llm(
@@ -265,6 +293,7 @@ class QueryEngine:
                     cache.set(key, response, ttl=300)
                     return response
 
+            # 后生成检查：安全/事实性/相关性评估
             try:
                 checked_response, _ = self.quality_guard.run(
                     query=question,
@@ -272,18 +301,25 @@ class QueryEngine:
                     context=result.get("context", ""),
                     sources=result["sources"],
                 )
-                response = checked_response
+                response = checked_response # 替换为质检后的响应
             except Exception as exc:
                 logger.warning("质量检测异常，已跳过质检: %s", exc)
+                # fail-open: 返回原始 answer，quality 字段置 None
                 response["quality"] = None
 
+        # ── 写入缓存 ──────────────────────────────────────
+        # TTL=300 秒（5分钟），之后重新检索生成
+        # 缓存质检后的结果（含 quality 字段），避免重复质检
         cache.set(key, response, ttl=300)
         logger.info("RAG 查询: '%s' → %d 条来源, 回答 %d 字", question, len(result["sources"]), len(answer))
         return response
 
+    # ------------------------------------------------------------------
+    # streaming query
+    # ------------------------------------------------------------------
     def query_stream(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
                       messages: list[dict] | None = None, tenant_id: int | None = None):
-        """Streaming RAG pipeline: retrieve → SSE source events → token stream."""
+        """Answer a question using RAG — yields SSE JSON lines for streaming."""
         # 权限与多租户：按租户隔离的流式 RAG 查询
         result = self._retrieve(question, top_k, doc_ids, messages, tenant_id)
 
@@ -296,6 +332,7 @@ class QueryEngine:
             yield f"data: {json.dumps({'step': 'not_found', 'msg': '知识库中没有找到相关信息。请先上传相关文档。', 'confidence': confidence})}\n\n"
             return
 
+        # Push retrieval steps → sources → confidence so frontend can show the pipeline
         steps = result.get("steps", [])
         if steps:
             yield f"data: {json.dumps({'steps': steps})}\n\n"
@@ -303,20 +340,28 @@ class QueryEngine:
         yield f"data: {json.dumps({'status': 'found'})}\n\n"
         yield f"data: {json.dumps({'sources': [s.model_dump() for s in result['sources']], 'confidence': confidence})}\n\n"
 
+        # Stream LLM answer token by token
         prompt = self._build_prompt(question, result["context"])
         llm = get_llm()
 
+        # 收集所有流式回答 chunk，供后续质检使用
+        # 质检需要对完整文本进行评估，因此需要在流式过程中累积每个 chunk
         _stream_chunks: list[str] = []
         for chunk in llm.chat_stream(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=1024,
         ):
-            _stream_chunks.append(chunk)
+            _stream_chunks.append(chunk) # 收集 chunk，质检时拼接为完整回答
             yield f"data: {json.dumps({'c': chunk})}\n\n"
 
+        # ── 质检：LLM 生成完毕后运行 QualityGuard ──────────────
+        # 收集完整的回答文本用于质检（QualityGuard 需要完整文本才能评估各项维度）
+        # 注意：质检是后置的，不阻塞流式输出，结果通过 quality SSE 事件推送
+        # 将 quality 事件放在 {"done": True} 之前的原因是：
+        # 前端收到 done 事件后停止读取，quality 必须在 done 之前到达
         if self.quality_guard is not None and settings.quality_guard_enabled:
-            full_answer = "".join(_stream_chunks)
+            full_answer = "".join(_stream_chunks) # 汇总所有 chunk 得到完整回答
             try:
                 context = result.get("context", "")
                 sources = result.get("sources", [])
@@ -327,6 +372,7 @@ class QueryEngine:
                     sources=sources,
                 )
 
+                # 根据干预动作构建 quality SSE 事件
                 quality_event: dict = {
                     "type": "quality",
                     "intervened": intervention.intervened,
@@ -342,22 +388,29 @@ class QueryEngine:
                         for v in intervention.violations
                     ],
                 }
-
+                # 不同动作附加不同字段，为前端提供展示所需信息
                 if intervention.action == "block":
+                    # 拦截：前端需要替换已显示的文本为安全消息
                     quality_event["override_answer"] = "抱歉，根据内容安全策略，无法展示此回答。"
                 elif intervention.action == "warn":
+                    # 警告：前端在回答下方追加警告提示
                     quality_event["warning_text"] = "此回答部分内容可能存在问题，请谨慎参考。"
                 elif intervention.action == "degrade":
+                    # 降级：前端清空回答，仅保留来源
                     quality_event["degrade_reason"] = "回答内容与检索来源不一致，已自动降级。"
 
                 yield f"data: {json.dumps(quality_event, ensure_ascii=False)}\n\n"
             except Exception as exc:
+                # fail-open: 质检异常时不阻塞流式，仅记录日志，不推送 quality 事件
                 logger.warning("流式质检异常，已跳过: %s", exc)
 
+        # ── 流式结束标记 ─────────────────────────────────────
+        # done 事件必须放在 quality 事件之后，因为前端收到 done 后停止读取
         yield f"data: {json.dumps({'done': True})}\n\n"
         logger.info("RAG stream: '%s' → %d sources", question, len(result["sources"]))
 
     def _generate_hypothetical(self, question: str) -> str | None:
+        """HyDE: ask LLM to write a hypothetical answer, improve retrieval recall."""
         try:
             llm = get_llm()
             return llm.chat(
@@ -378,6 +431,7 @@ class QueryEngine:
 
 
 def _count_documents(tenant_id: int | None = None) -> int:
+    """Count documents in the knowledge base (from t_document metadata table)."""
     """权限与多租户：按租户统计文档数"""
     try:
         import psycopg
@@ -394,6 +448,7 @@ def _count_documents(tenant_id: int | None = None) -> int:
 
 @lru_cache(maxsize=1)
 def get_query_engine() -> QueryEngine:
+    """创建 QueryEngine 实例，自动挂载 QualityGuard 质量检测模块。"""
     from src.quality.guard import QualityGuard
     from src.quality.intervention import InterventionEngine
     from src.quality.safety import SafetyChecker

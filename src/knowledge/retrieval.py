@@ -19,26 +19,32 @@ logger = logging.getLogger(__name__)
 
 
 def _get_original_text(node) -> str:
+    """Return original text for LLM/reranker, falling back to content with warning."""
     ot = node.metadata.get("original_text")
     if ot:
         return ot
     logger.warning("Node %s missing original_text, using tokenized content", node.node_id)
     return node.get_content()
 
-
+# ---------------------------------------------------------------------------
+# BM25 keyword search — bypasses llama_index, queries PG full-text index directly
+# ---------------------------------------------------------------------------
 def _bm25_search(query_tokens: str, top_k: int, doc_ids: list[str] | None = None,
                  tenant_id: int | None = None) -> list[dict]:
     """BM25 keyword recall via PostgreSQL full-text search.
 
-    Splits query into TSQUERY tokens, searches pgvector's metadata_ column,
-    returns dicts compatible with the RRF fusion step.
+    query_tokens is jieba-segmented text (space-separated words).
+    Uses OR logic (|) so partial token matches are scored by ts_rank
+    rather than rejected outright. Punctuation-only tokens are filtered.
+    When doc_ids is provided, restricts to those documents via metadata_->>'source'.
     """
+    # Filter to meaningful tokens, build OR-connected tsquery
     # 权限与多租户：BM25 关键字搜索，按 tenant_id 过滤
     tokens = [t for t in query_tokens.split() if t.strip() and len(t.strip()) > 1 or t.strip().isalnum()]
     if not tokens:
         return []
     tsquery = " | ".join(tokens)
-
+    # Build source filter clause
     conditions = []
     filter_params = []
     if doc_ids:
@@ -78,25 +84,34 @@ def _bm25_search(query_tokens: str, top_k: int, doc_ids: list[str] | None = None
     finally:
         conn.close()
 
-
+# ---------------------------------------------------------------------------
+# RRF (Reciprocal Rank Fusion) — fair score fusion across ranking sources
+# ---------------------------------------------------------------------------
 def _rrf_fusion(
     dense_nodes: list,
     sparse_results: list[dict],
     k: int = 60,
     top_k: int = 20,
 ) -> list:
+
+    """Fuse two ranked lists with Reciprocal Rank Fusion.
+
+    score(node) = Σ 1/(k + rank_i)  where rank_i is 0-indexed position.
+    k=60 is the empirically optimal constant.
+    """
     scores: dict[str, float] = {}
     node_map: dict[str, object] = {}
-
+    # Dense contribution
     for rank, node in enumerate(dense_nodes):
         nid = node.node_id
         scores[nid] = scores.get(nid, 0) + 1.0 / (k + rank + 1)
         node_map[nid] = node
-
+    # Sparse contribution
     for rank, row in enumerate(sparse_results):
         nid = row["node_id"]
         scores[nid] = scores.get(nid, 0) + 1.0 / (k + rank + 1)
         if nid not in node_map:
+            # BM25-only result — reconstruct TextNode from DB row
             from llama_index.core.schema import TextNode
             meta = row["metadata"]
             original_text = meta.get("original_text", row["text"])
@@ -106,7 +121,7 @@ def _rrf_fusion(
                 metadata={**meta, "original_text": original_text},
             )
             node_map[nid] = node
-
+    # Sort by RRF score descending
     sorted_ids = sorted(scores, key=lambda nid: scores[nid], reverse=True)
     result = []
     for nid in sorted_ids[:top_k]:
@@ -115,12 +130,22 @@ def _rrf_fusion(
         result.append(node)
     return result
 
-
+# ---------------------------------------------------------------------------
+# Sentence Window — expand child chunks to parent contexts
+# ---------------------------------------------------------------------------
 def _expand_to_parents(child_nodes: list) -> list:
+    """Expand child chunks to their parent context windows.
+
+    Looks up parent_id in chunk_contexts table. Deduplicates — multiple
+    children sharing the same parent return the parent only once.
+    Preserves child node scores and _dense_max_score.
+
+    If nodes have no parent_id (normal chunking mode), returns them as-is.
+    """
     t_sw = time.monotonic()
     if not child_nodes:
         return []
-
+    # Check if any node has a parent_id
     parent_ids = []
     seen_pids = set()
     for node in child_nodes:
@@ -130,14 +155,14 @@ def _expand_to_parents(child_nodes: list) -> list:
             parent_ids.append(pid)
 
     if not parent_ids:
-        return child_nodes
-
+        return child_nodes  # normal mode — no expansion needed
+    # Batch fetch parent contexts
     from src.knowledge.index_store import _fetch_parent_contexts
     parents = _fetch_parent_contexts(parent_ids)
 
     if not parents:
         return child_nodes
-
+    # Build result: preserve child order, deduplicate parents
     from llama_index.core.schema import TextNode
 
     result = []
@@ -161,6 +186,7 @@ def _expand_to_parents(child_nodes: list) -> list:
                 "parent_id": pid,
             },
         )
+        # Inherit child scores
         object.__setattr__(parent, 'score', getattr(node, 'score', 0))
         dms = getattr(node, '_dense_max_score', None)
         if dms is not None:
@@ -173,6 +199,9 @@ def _expand_to_parents(child_nodes: list) -> list:
     return result
 
 
+# ---------------------------------------------------------------------------
+# HybridRetriever
+# ---------------------------------------------------------------------------
 class HybridRetriever:
     """Two-stage retrieval: coarse (vector + BM25 → RRF) → reranker → final top_k."""
 
@@ -180,9 +209,16 @@ class HybridRetriever:
         self.coarse_k = coarse_k if coarse_k is not None else settings.retrieval_coarse_k
         self.fine_k = fine_k if fine_k is not None else settings.retrieval_fine_k
 
+    # ------------------------------------------------------------------
+    # shared coarse retrieval (was duplicated in retrieve / retrieve_with_rerank)
+    # ------------------------------------------------------------------
     def _coarse_retrieve(self, query: str, doc_ids: list[str] | None = None,
                          tenant_id: int | None = None) -> list:
-        """Coarse retrieval — vector + BM25 + RRF fusion."""
+        """Two independent recall paths + RRF fusion, returns ranked node list.
+
+        When doc_ids is provided, restricts search to those documents via
+        MetadataFilters (two-level retrieval Level 2 / external doc filter).
+        """
         # 权限与多租户：粗召回阶段按 tenant_id 过滤
         from llama_index.core.vector_stores.types import (
             VectorStoreQuery, MetadataFilters, MetadataFilter,
@@ -194,7 +230,7 @@ class HybridRetriever:
 
         store = get_vector_store()
         embed_mgr = get_embedding_manager()
-
+        # Embed & tokenize
         query_embedding = embed_mgr.encode_query(query)
         tokenized_query = tokenize(query)
 
@@ -218,7 +254,7 @@ class HybridRetriever:
                 filters=filter_list,
                 condition=FilterCondition.AND,
             )
-
+        # Path 1: pure vector search (no hybrid — BM25 goes through separate path)
         q = VectorStoreQuery(
             query_embedding=query_embedding,
             similarity_top_k=coarse_k,
@@ -228,7 +264,7 @@ class HybridRetriever:
         t_vec = time.monotonic()
         result = store.query(q)
         dense_nodes = result.nodes or []
-
+        # Attach similarity scores
         if result.similarities:
             for node, score in zip(dense_nodes, result.similarities):
                 if score is not None:
@@ -238,7 +274,7 @@ class HybridRetriever:
 
         if not dense_nodes:
             return []
-
+        # Path 2: BM25 keyword search (graceful degradation when PG is down)
         try:
             sparse_results = _bm25_search(tokenized_query, top_k=coarse_k, doc_ids=doc_ids, tenant_id=tenant_id)
         except Exception:
@@ -247,9 +283,12 @@ class HybridRetriever:
 
         if not sparse_results:
             return dense_nodes[:coarse_k]
-
+        # RRF fusion
         fused = _rrf_fusion(dense_nodes, sparse_results, top_k=coarse_k)
-
+        # Preserve max dense similarity for Stage-1 threshold compatibility.
+        # RRF scores (~0.01–0.03) are in a different range than cosine
+        # similarity (0–1). query_engine uses _dense_max_score to decide
+        # whether to trigger Stage 2 (HyDE + reranker).
         max_dense = max(
             (getattr(n, 'score', 0) or 0 for n in dense_nodes), default=0,
         )
@@ -262,6 +301,9 @@ class HybridRetriever:
         )
         return fused
 
+    # ------------------------------------------------------------------
+    # public retrieval methods
+    # ------------------------------------------------------------------
     def retrieve(self, query: str, doc_ids: list[str] | None = None,
                  tenant_id: int | None = None) -> list:
         """Fast path: coarse retrieval → expand windows → top fine_k (no reranker)."""
@@ -291,7 +333,7 @@ class HybridRetriever:
             )
         else:
             return expanded[:self.fine_k]
-
+        # O(1) node lookup via text → [nodes] mapping (handles duplicate text)
         from collections import defaultdict
         text_to_nodes: dict[str, list] = defaultdict(list)
         for node in expanded:
@@ -300,6 +342,7 @@ class HybridRetriever:
         reranked_nodes = []
         for text, score in ranked:
             if text is None:
+                # reranker disabled: use expanded node directly
                 node = expanded[len(reranked_nodes)]
                 object.__setattr__(node, 'score', 0.0)
                 reranked_nodes.append(node)

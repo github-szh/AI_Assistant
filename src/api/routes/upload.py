@@ -231,7 +231,10 @@ async def upload_stream(
     strategy: str | None = Query(None, description="切片策略: fixed_size / sentence / markdown_header / recursive"),
     sentence_window: bool = Query(False, description="启用句子窗口检索（父子chunk）"),
 ):
-    """SSE streaming upload — reports parsing progress in real-time."""
+    """SSE streaming upload — reports parsing progress in real-time.
+
+    Set replace_doc_id to replace an existing document before re-ingesting.
+    """
     # 权限与多租户：获取当前用户租户ID
     tenant_id = user.get("tenant_id")
 
@@ -299,7 +302,8 @@ async def upload_stream(
             yield f"data: {_json.dumps({'step':'chunk','msg':f'解析完成，正在分块...','pages':len(parsed)})}\n\n"
             parser_used = parsed[0].parser_used
             page_count = len(parsed)
-
+            
+            # Auto-detect Sentence Window
             use_sw = sentence_window
             if use_sw is None or use_sw is False:
                 test_chunker = Chunker(
