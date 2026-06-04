@@ -196,3 +196,4 @@ data/documents
 #test
 tests/*
 Kill_uvicorn.bat
+CLAUDE_zh.md
