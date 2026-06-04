@@ -21,3 +21,5 @@ Pillow
 llama-index
 llama-parse
 llama-index-vector-stores-postgres
+llama-index-vector-stores-chroma
+chromadb
