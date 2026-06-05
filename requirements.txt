@@ -23,3 +23,12 @@ llama-parse
 llama-index-vector-stores-postgres
 llama-index-vector-stores-chroma
 chromadb
+prometheus-client
+psutil
+httpx
+# Arize Phoenix (LLM 可观测性 + 成本追踪)
+# 取消注释下方两行后运行 pip install -r requirements.txt
+# 使用方式: python -m phoenix.server.main serve  # 启动 Phoenix 服务
+# 然后启动本应用，自动通过 OTLP 推送追踪数据到 localhost:6006
+# arize-phoenix
+# openinference-instrumentation-openai

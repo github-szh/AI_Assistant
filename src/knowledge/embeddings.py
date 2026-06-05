@@ -2,11 +2,13 @@
 
 import hashlib
 import logging
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, List, Optional
 
 from src.config import settings
+from src.monitoring.metrics import record_llm_call
 from src.storage.cache import get_memory_cache
 from src.utils.ssl_utils import get_verify_param, get_httpx_client
 
@@ -27,8 +29,11 @@ class _ZhipuAPI:
         import httpx
         verify = get_verify_param()
         results = []
+        start = time.time()
+        total_input = 0
         for i in range(0, len(texts), self.batch):
             batch = texts[i:i + self.batch]
+            total_input += sum(len(t) for t in batch)
             resp = httpx.post(
                 self.url,
                 headers={"Authorization": f"Bearer {self.key}"},
@@ -38,6 +43,9 @@ class _ZhipuAPI:
             )
             resp.raise_for_status()
             results.extend([d["embedding"] for d in resp.json()["data"]])
+        elapsed = time.time() - start
+        prompt_tokens = max(1, total_input * 2 // 5)
+        record_llm_call("zhipu", self.model, prompt_tokens, 0, elapsed)
         return results
 
 
@@ -54,13 +62,19 @@ class _AliAPI:
         http_client = get_httpx_client()
         client = OpenAI(api_key=self.api_key, base_url=settings.ali_base_url, http_client=http_client)
         results = []
+        start = time.time()
+        total_input = 0
         for i in range(0, len(texts), self.batch):
             batch = texts[i:i + self.batch]
+            total_input += sum(len(t) for t in batch)
             resp = client.embeddings.create(
                 model=self.model,
                 input=batch,
             )
             results.extend([d.embedding for d in resp.data])
+        elapsed = time.time() - start
+        prompt_tokens = max(1, total_input * 2 // 5)
+        record_llm_call("ali", self.model, prompt_tokens, 0, elapsed)
         return results
 
 

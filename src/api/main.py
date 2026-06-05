@@ -1,23 +1,62 @@
 """FastAPI application entry point."""
 
 import logging
+import threading
+import time
 import traceback
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from src.api.middleware import LoggingMiddleware
 from src.api.routes import health, chat, chat_stream, upload, documents, delete_document, query, sessions, auth, admin
+from src.monitoring.metrics import collect_db_pool, collect_gpu, collect_redis, collect_resources, generate_latest
+from src.monitoring.alerts import evaluate_alerts
+from src.monitoring.dashboard import router as dashboard_router
 from src.observability.logging_config import setup_logging
+from src.observability.tracing import setup_tracing
 
 logger = logging.getLogger(__name__)
+
+
+def _resource_loop(interval: int = 15):
+    # Run once immediately, then every interval
+    while True:
+        try:
+            collect_resources()
+            collect_db_pool()
+            collect_gpu()
+            collect_redis()
+        except Exception:
+            pass
+        # Check alert rules after resource collection
+        try:
+            fired = evaluate_alerts()
+            if fired:
+                logger.warning("Alerts fired: %s", [f["label"] for f in fired])
+        except Exception:
+            pass
+        time.sleep(interval)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    from src.config import settings
+    if settings.phoenix_enabled:
+        setup_tracing()
+    # Start background resource collector
+    t = threading.Thread(target=_resource_loop, args=(15,), daemon=True)
+    t.start()
+    # Initialize monitoring DB
+    try:
+        from src.monitoring.storage import init_db, init_alerts
+        init_db()
+        init_alerts()
+    except Exception:
+        pass
     # Pre-load embedding model
     try:
         from src.knowledge.embeddings import get_embedding_manager
@@ -60,7 +99,13 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
+# Prometheus metrics endpoint
+@app.get("/metrics")
+async def metrics():
+    return Response(content=generate_latest(), media_type="text/plain")
+
 # Routes
+app.include_router(dashboard_router)
 app.include_router(health.router)
 app.include_router(chat.router)
 app.include_router(chat_stream.router)

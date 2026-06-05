@@ -1,11 +1,15 @@
 import logging
 
 import httpx
+from opentelemetry import trace
 
 from src.config import settings
 from src.llm.base import BaseLLMProvider, ChatResult, StreamChunk
 
 logger = logging.getLogger(__name__)
+
+
+_tracer = trace.get_tracer("zhipu")
 
 
 class ZhipuProvider(BaseLLMProvider):
@@ -43,14 +47,27 @@ class ZhipuProvider(BaseLLMProvider):
             usage = next((c.usage for c in chunks if c.usage), None)
             return ChatResult(text=text, usage=usage)
         client = self._ensure_client()
-        response = client.chat.completions.create(
-            model=model or self.default_model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=False,
-        )
-        text = response.choices[0].message.content or ""
+        with _tracer.start_as_current_span(
+            "chat.completions.create",
+            attributes={
+                "openinference.span.kind": "LLM",
+                "llm.provider": "zhipu",
+                "llm.model": model or self.default_model,
+                "llm.system": "zhipu",
+            },
+        ) as span:
+            response = client.chat.completions.create(
+                model=model or self.default_model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
+            )
+            text = response.choices[0].message.content or ""
+            if hasattr(response, "usage") and response.usage:
+                span.set_attribute("llm.token_count.prompt", response.usage.prompt_tokens)
+                span.set_attribute("llm.token_count.completion", response.usage.completion_tokens)
+                span.set_attribute("llm.token_count.total", response.usage.total_tokens)
         usage = None
         if hasattr(response, 'usage') and response.usage:
             usage = {
@@ -69,14 +86,27 @@ class ZhipuProvider(BaseLLMProvider):
         max_tokens: int = 4096,
     ):
         client = self._ensure_client()
-        response = client.chat.completions.create(
-            model=model or self.default_model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-        )
-        for chunk in response:
-            text = chunk.choices[0].delta.content if chunk.choices else None
-            if text:
-                yield StreamChunk(text=text)
+        with _tracer.start_as_current_span(
+            "chat.completions.create",
+            attributes={
+                "openinference.span.kind": "LLM",
+                "llm.provider": "zhipu",
+                "llm.model": model or self.default_model,
+                "llm.system": "zhipu",
+            },
+        ) as span:
+            response = client.chat.completions.create(
+                model=model or self.default_model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+            for chunk in response:
+                text = chunk.choices[0].delta.content if chunk.choices else None
+                if text:
+                    yield StreamChunk(text=text)
+                if hasattr(chunk, "usage") and chunk.usage:
+                    span.set_attribute("llm.token_count.prompt", chunk.usage.prompt_tokens)
+                    span.set_attribute("llm.token_count.completion", chunk.usage.completion_tokens)
+                    span.set_attribute("llm.token_count.total", chunk.usage.total_tokens)

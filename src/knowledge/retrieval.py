@@ -322,6 +322,7 @@ class HybridRetriever:
 
         expanded = _expand_to_parents(fused_nodes)
 
+        _rag_start = time.monotonic()
         if settings.rerank_enabled:
             from src.knowledge.reranker import get_reranker
             reranker = get_reranker()
@@ -354,6 +355,17 @@ class HybridRetriever:
                 reranked_nodes.append(node)
 
         logger.debug("Reranker: %d → %d nodes", len(expanded), len(reranked_nodes))
+
+        # Record RAG quality metrics
+        try:
+            from src.monitoring.storage import save_rag_query
+            scores = [s for _, s in ranked if s is not None]
+            max_score = max(scores) if scores else 0.0
+            query_hash = str(hash(query))
+            save_rag_query(query_hash, query, max_score, len(reranked_nodes), time.monotonic() - _rag_start)
+        except Exception:
+            pass
+
         return reranked_nodes
 
 
