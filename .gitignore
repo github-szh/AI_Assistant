@@ -195,3 +195,6 @@ data/documents
 
 #test
 tests/*
+data/monitoring.db
+data/monitoring.db-shm
+data/monitoring.db-wal
