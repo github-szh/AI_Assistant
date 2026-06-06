@@ -8,19 +8,11 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from src.api.routes.auth import get_current_user
 from src.api.permissions import require_permission
+from src.api.deps import get_pg_connection
 from src.config import settings
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 logger = logging.getLogger(__name__)
-
-
-def _pg():
-    import psycopg
-    return psycopg.connect(
-        host=settings.pg_host, port=settings.pg_port,
-        dbname=settings.pg_database, user=settings.pg_user,
-        password=settings.pg_password, connect_timeout=5,
-    )
 
 
 @router.post("")
@@ -28,29 +20,37 @@ async def create_session(user: dict = Depends(require_permission("chat:send"))):
     # 权限与多租户：创建会话时写入 tenant_id
     tenant_id = user.get("tenant_id")
     sid = uuid.uuid4().hex[:16]
-    conn = _pg()
-    conn.execute(
-        "INSERT INTO t_session_info (id, title, user_id, tenant_id, created_at, updated_at) VALUES (%s,%s,%s,%s,NOW(),NOW())",
-        [sid, "新对话", user["user_id"], tenant_id],
-    )
-    conn.commit()
-    conn.close()
+    async with get_pg_connection() as conn:
+        conn.execute(
+            "INSERT INTO t_session_info (id, title, user_id, tenant_id, created_at, updated_at) VALUES (%s,%s,%s,%s,NOW(),NOW())",
+            [sid, "新对话", user["user_id"], tenant_id],
+        )
+        conn.commit()
     return {"id": sid, "title": "新对话", "messages": []}
 
 
 @router.get("")
 async def list_sessions(user: dict = Depends(require_permission("chat:view"))):
-    # 权限与多租户：按租户和用户过滤会话
+    # 权限与多租户：super_admin 跳过租户过滤
+    is_super = user.get("role") == "super_admin"
     tenant_id = user.get("tenant_id")
-    conn = _pg()
-    rows = conn.execute(
-        """SELECT s.id, s.title, s.created_at, s.updated_at,
-                  (SELECT count(*) FROM t_session_message m WHERE m.session_id=s.id) as msg_count
-           FROM t_session_info s WHERE s.user_id=%s AND s.tenant_id=%s
-           ORDER BY COALESCE(s.updated_at, s.created_at) DESC""",
-        [user["user_id"], tenant_id],
-    ).fetchall()
-    conn.close()
+    async with get_pg_connection() as conn:
+        if is_super:
+            rows = conn.execute(
+                """SELECT s.id, s.title, s.created_at, s.updated_at,
+                          (SELECT count(*) FROM t_session_message m WHERE m.session_id=s.id) as msg_count
+                   FROM t_session_info s WHERE s.user_id=%s
+                   ORDER BY COALESCE(s.updated_at, s.created_at) DESC""",
+                [user["user_id"]],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT s.id, s.title, s.created_at, s.updated_at,
+                          (SELECT count(*) FROM t_session_message m WHERE m.session_id=s.id) as msg_count
+                   FROM t_session_info s WHERE s.user_id=%s AND s.tenant_id=%s
+                   ORDER BY COALESCE(s.updated_at, s.created_at) DESC""",
+                [user["user_id"], tenant_id],
+            ).fetchall()
     sessions = []
     for r in rows:
         sessions.append({
@@ -69,38 +69,35 @@ async def get_session(
 ):
     # 权限与多租户：校验会话归属
     tenant_id = user.get("tenant_id")
-    conn = _pg()
-    row = conn.execute(
-        "SELECT id, title, user_id, summary FROM t_session_info WHERE id=%s AND tenant_id=%s",
-        [sid, tenant_id],
-    ).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(404, "会话不存在")
-    if row[2] != user["user_id"]:
-        conn.close()
-        raise HTTPException(403, "无权访问")
+    async with get_pg_connection() as conn:
+        row = conn.execute(
+            "SELECT id, title, user_id, summary FROM t_session_info WHERE id=%s AND tenant_id=%s",
+            [sid, tenant_id],
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "会话不存在")
+        if row[2] != user["user_id"]:
+            raise HTTPException(403, "无权访问")
 
-    fetch_limit = limit + 1
-    if before_id:
-        msgs = conn.execute(
-            """SELECT id, role, content FROM (
-                   SELECT id, role, content FROM t_session_message
-                   WHERE session_id=%s AND id < %s
-                   ORDER BY id DESC LIMIT %s
-               ) t ORDER BY id ASC""",
-            [sid, before_id, fetch_limit],
-        ).fetchall()
-    else:
-        msgs = conn.execute(
-            """SELECT id, role, content FROM (
-                   SELECT id, role, content FROM t_session_message
-                   WHERE session_id=%s
-                   ORDER BY id DESC LIMIT %s
-               ) t ORDER BY id ASC""",
-            [sid, fetch_limit],
-        ).fetchall()
-    conn.close()
+        fetch_limit = limit + 1
+        if before_id:
+            msgs = conn.execute(
+                """SELECT id, role, content FROM (
+                       SELECT id, role, content FROM t_session_message
+                       WHERE session_id=%s AND id < %s
+                       ORDER BY id DESC LIMIT %s
+                   ) t ORDER BY id ASC""",
+                [sid, before_id, fetch_limit],
+            ).fetchall()
+        else:
+            msgs = conn.execute(
+                """SELECT id, role, content FROM (
+                       SELECT id, role, content FROM t_session_message
+                       WHERE session_id=%s
+                       ORDER BY id DESC LIMIT %s
+                   ) t ORDER BY id ASC""",
+                [sid, fetch_limit],
+            ).fetchall()
 
     has_more = len(msgs) > limit
     if has_more:
@@ -118,16 +115,14 @@ async def get_session(
 async def rename_session(sid: str, title: str, user: dict = Depends(require_permission("chat:send"))):
     # 权限与多租户：校验租户
     tenant_id = user.get("tenant_id")
-    conn = _pg()
-    result = conn.execute(
-        "UPDATE t_session_info SET title=%s, updated_at=NOW() WHERE id=%s AND user_id=%s AND tenant_id=%s",
-        [title[:100], sid, user["user_id"], tenant_id],
-    )
-    conn.commit()
-    if result.rowcount == 0:
-        conn.close()
-        raise HTTPException(404, "会话不存在")
-    conn.close()
+    async with get_pg_connection() as conn:
+        result = conn.execute(
+            "UPDATE t_session_info SET title=%s, updated_at=NOW() WHERE id=%s AND user_id=%s AND tenant_id=%s",
+            [title[:100], sid, user["user_id"], tenant_id],
+        )
+        conn.commit()
+        if result.rowcount == 0:
+            raise HTTPException(404, "会话不存在")
     return {"status": "ok"}
 
 
@@ -135,14 +130,12 @@ async def rename_session(sid: str, title: str, user: dict = Depends(require_perm
 async def delete_session(sid: str, user: dict = Depends(require_permission("chat:send"))):
     # 权限与多租户：校验租户
     tenant_id = user.get("tenant_id")
-    conn = _pg()
-    result = conn.execute(
-        "DELETE FROM t_session_info WHERE id=%s AND user_id=%s AND tenant_id=%s",
-        [sid, user["user_id"], tenant_id],
-    )
-    conn.commit()
-    if result.rowcount == 0:
-        conn.close()
-        raise HTTPException(404, "会话不存在")
-    conn.close()
+    async with get_pg_connection() as conn:
+        result = conn.execute(
+            "DELETE FROM t_session_info WHERE id=%s AND user_id=%s AND tenant_id=%s",
+            [sid, user["user_id"], tenant_id],
+        )
+        conn.commit()
+        if result.rowcount == 0:
+            raise HTTPException(404, "会话不存在")
     return {"status": "deleted"}

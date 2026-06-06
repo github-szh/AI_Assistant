@@ -1,13 +1,16 @@
-"""FastAPI dependency injection — with psycopg connection pool.
+"""FastAPI dependency injection — lightweight connection pool.
 
-连接池复用数据库连接，避免每个请求都创建新连接（TCP 握手），
-高并发下性能提升 5~10 倍。
+自建连接池：queue + semaphore，不依赖 psycopg_pool，行为完全可控。
 """
 
+import asyncio
 import logging
+import threading
+import time
+from contextlib import asynccontextmanager, contextmanager
 from functools import lru_cache
 
-from psycopg_pool import ConnectionPool  # psycopg 连接池，需 pip install psycopg-pool
+import psycopg
 
 from src.config import settings, Settings
 from src.llm.router import LLMRouter, get_llm
@@ -15,59 +18,144 @@ from src.parsing.loader import DocumentLoader
 
 logger = logging.getLogger(__name__)
 
-# ── Connection pool (singleton) ──────────────────────────────
-
-# 全局连接池单例，模块首次导入时为空，首次调用 get_pg_connection() 时初始化
-_pool: ConnectionPool | None = None
+# ── Custom connection pool ──────────────────────────────────
 
 
-def _get_pool() -> ConnectionPool:
-    """Get or create the shared connection pool.
-    
-    Uses psycopg_pool.ConnectionPool with lazy initialisation.
-    Requires psycopg_pool >= 3.1 (pip install psycopg-pool).
+class _Pool:
+    """极简连接池：信号量控制并发数，列表存储空闲连接。
 
-    连接池复用数据库连接，避免每次请求都创建新连接，减少 TCP 握手开销。
+    与 psycopg_pool 不同，这个池的行为完全透明，没有后台线程、
+    没有隐式状态重置、没有 ProactorEventLoop 兼容问题。
     """
+
+    def __init__(self, dsn: str, min_size: int = 5, max_size: int = 30, timeout: float = 30):
+        self.dsn = dsn
+        self.max_size = max_size
+        self.timeout = timeout
+        self._sem = threading.BoundedSemaphore(max_size)
+        self._lock = threading.Lock()
+        self._pool: list[psycopg.Connection] = []
+        self._total_created = 0
+        # 预热连接
+        for _ in range(min_size):
+            try:
+                self._pool.append(psycopg.connect(dsn, connect_timeout=5))
+                self._total_created += 1
+            except Exception as exc:
+                logger.warning("预热连接失败: %s", exc)
+        logger.info("Pool ready: %d connections (max=%d)", len(self._pool), max_size)
+
+    def getconn(self) -> psycopg.Connection:
+        """获取连接，最多等待 timeout 秒。"""
+        if not self._sem.acquire(timeout=self.timeout):
+            raise PoolTimeout(
+                f"couldn't get a connection after {self.timeout:.0f} sec "
+                f"(pool: {len(self._pool)} free, {self._total_created} total)"
+            )
+        with self._lock:
+            if self._pool:
+                conn = self._pool.pop()
+                # 验证连接可用性
+                try:
+                    conn.execute("SELECT 1")
+                except Exception:
+                    # 连接已死，创建新的
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    self._total_created -= 1
+                    conn = self._connect_new()
+                return conn
+            return self._connect_new()
+
+    def putconn(self, conn: psycopg.Connection) -> None:
+        """归还连接，重置到 IDLE 状态。"""
+        try:
+            conn.rollback()
+            conn.autocommit = True  # 切到 autocommit 让连接回到 IDLE
+        except Exception:
+            pass
+        with self._lock:
+            self._pool.append(conn)
+        self._sem.release()
+
+    def _connect_new(self) -> psycopg.Connection:
+        conn = psycopg.connect(self.dsn, connect_timeout=5)
+        self._total_created += 1
+        return conn
+
+    def close(self) -> None:
+        with self._lock:
+            for conn in self._pool:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._pool.clear()
+
+    @property
+    def free(self) -> int:
+        return len(self._pool)
+
+    @property
+    def total(self) -> int:
+        return self._total_created
+
+
+class PoolTimeout(Exception):
+    """连接池耗尽异常。"""
+    pass
+
+
+_pool: _Pool | None = None
+
+
+def _get_pool() -> _Pool:
     global _pool
     if _pool is None:
         dsn = (
             f"postgresql://{settings.pg_user}:{settings.pg_password}"
             f"@{settings.pg_host}:{settings.pg_port}/{settings.pg_database}"
         )
-        _pool = ConnectionPool(
-            conninfo=dsn,
-            min_size=4,      # 最少保持 4 个空闲连接
-            max_size=20,     # 最大 20 个并发连接（原10，因连接泄漏可能耗尽）
-            timeout=10,      # 等待连接的超时秒数（原5）
-            max_lifetime=300,  # 连接最多存活 5 分钟后回收，防止泄漏堆积
-            open=False,      # 先创建对象，首次使用时再真正打开（惰性加载）
-        )
-        _pool.open()
-        logger.info("Connection pool created (min=2, max=20)")
+        _pool = _Pool(dsn=dsn, min_size=5, max_size=30, timeout=30)
     return _pool
 
 
-def get_pg_connection():
-    """从连接池获取一个连接 — 调用 .close() 归还到池
-    
-    使用 pool.getconn() 直接获取 PoolConnection，调用 conn.close()
-    自动归还。重试逻辑由 psycopg_pool 内部处理，这里不做额外健康检查
-    以避免重复 getconn/close 导致的竞争条件。
-    """
-    pool = _get_pool()
-    return pool.getconn()
+@asynccontextmanager
+async def get_pg_connection():
+    """异步上下文管理器 — 在线程池获取/归还连接，不阻塞事件循环。"""
+    p = _get_pool()
+    conn = await asyncio.to_thread(p.getconn)
+    try:
+        yield conn
+    finally:
+        await asyncio.to_thread(p.putconn, conn)
+
+
+@contextmanager
+def get_pg_connection_sync():
+    """同步上下文管理器。"""
+    p = _get_pool()
+    conn = p.getconn()
+    try:
+        yield conn
+    finally:
+        p.putconn(conn)
+
+
+async def close_pool() -> None:
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        _pool = None
+        logger.info("Pool closed")
 
 
 def pool_stats() -> dict:
-    """返回连接池当前状态（用于调试）"""
-    pool = _get_pool()
-    return {
-        "min": pool.min_size,
-        "max": pool.max_size,
-        "free": len(pool._pool) if hasattr(pool, "_pool") else -1,
-        "requests_waiting": pool._nrequests if hasattr(pool, "_nrequests") else -1,
-    }
+    if _pool is None:
+        return {"free": 0, "total": 0}
+    return {"free": _pool.free, "total": _pool.total}
 
 
 # ── Other shared dependencies ────────────────────────────────
@@ -81,6 +169,3 @@ def get_settings() -> Settings:
 @lru_cache()
 def get_document_loader() -> DocumentLoader:
     return DocumentLoader()
-
-
-# LLM router is already a singleton via get_llm()

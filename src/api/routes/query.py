@@ -22,7 +22,7 @@ async def query_knowledge(
     """Query the knowledge base (non-streaming)."""
     # 权限与多租户：按租户隔离，注入 tenant_id
     logger.info("RAG query: '%s' (top_k=%d, tenant=%s)", req.question[:100], req.top_k, user.get("tenant_id"))
-    result = engine.query(
+    result = await engine.query(
         question=req.question, top_k=req.top_k,
         doc_ids=req.doc_ids, messages=req.messages,
         tenant_id=user.get("tenant_id"),
@@ -41,7 +41,7 @@ async def query_knowledge_stream(
     logger.info("RAG stream: '%s' (top_k=%d, tenant=%s)", req.question[:100], req.top_k, user.get("tenant_id"))
 
     async def generate():
-        for sse_line in engine.query_stream(
+        async for sse_line in engine.query_stream(
             question=req.question, top_k=req.top_k,
             doc_ids=req.doc_ids, messages=req.messages,
             tenant_id=user.get("tenant_id"),

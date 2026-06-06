@@ -10,21 +10,21 @@ ROLE_PERMISSIONS = {
     "tenant_admin": [
         "tenant:view", "tenant:manage", "tenant:users:manage",
         "document:upload", "document:view", "document:delete", "document:download",
-        "chat:send", "chat:view", "chat:delete", "chat:export",
-        "knowledge:query", "knowledge:manage",
-        "quality:view", "quality:admin",
+        "chat:send", "chat:view", "chat:delete",
+        "knowledge:query",
+        "monitoring:view",
+        "quality:view",
         "system:settings:view", "system:llm:switch",
     ],
 
     "editor": [
         "document:upload", "document:view", "document:delete", "document:download",
         "chat:send", "chat:view", "chat:delete",
-        "knowledge:query", "knowledge:manage",
+        "knowledge:query",
         "quality:view",
     ],
 
     "viewer": [
-        "document:view",
         "chat:send", "chat:view", "chat:delete",
         "knowledge:query",
         "quality:view",

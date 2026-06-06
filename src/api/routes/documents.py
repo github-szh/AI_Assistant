@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from src.api.deps import get_pg_connection
 from src.api.permissions import require_permission
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 @router.get("", response_model=DocumentListResponse)
 async def list_documents(user: dict = Depends(require_permission("document:view"))):
     try:
-        docs = _query_pg_documents(user)  # 权限与多租户：传入 user 按 tenant_id 过滤
+        docs = await _query_pg_documents(user)  # 权限与多租户：传入 user 按 tenant_id 过滤
         if docs is not None:
             return DocumentListResponse(documents=docs[:50], total=len(docs))
         return DocumentListResponse(documents=[], total=0)
@@ -28,12 +29,12 @@ async def list_documents(user: dict = Depends(require_permission("document:view"
 
 @router.get("/{doc_id}", response_model=DocumentDetail)
 async def get_document(doc_id: str, user: dict = Depends(require_permission("document:view"))):
-    docs = _query_pg_documents(user)  # 权限与多租户：按租户过滤
+    docs = await _query_pg_documents(user)  # 权限与多租户：按租户过滤
     if docs is None:
         raise HTTPException(503, "数据库暂不可用，请稍后重试")
     for d in docs:
         if d.doc_id == doc_id:
-            chunks = _get_chunks(doc_id)
+            chunks = await _get_chunks(doc_id)
             return DocumentDetail(
                 doc_id=d.doc_id, filename=d.filename, file_type=d.file_type,
                 status=d.status, parser_used=d.parser_used,
@@ -44,38 +45,40 @@ async def get_document(doc_id: str, user: dict = Depends(require_permission("doc
     raise HTTPException(404, "文档不存在")
 
 
-def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
-    # 权限与多租户：按 tenant_id 过滤文档
+async def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
+    # 权限与多租户：super_admin 看全部，其他角色按 tenant_id 过滤
+    is_super = user.get("role") == "super_admin"
     tenant_id = user.get("tenant_id")
-    conn = None
     try:
-        conn = get_pg_connection()
-        rows = conn.execute("""
-            SELECT
-                td.doc_id,
-                td.filename,
-                td.file_type,
-                td.parser_used,
-                td.chunks_count,
-                td.file_size,
-                td.uploaded_at,
-                td.pages,
-                td.summary,
-                count(dd.id) as vector_chunks
-            FROM t_document td
-            LEFT JOIN data_documents dd
-                ON COALESCE(dd.metadata_->>'source', dd.metadata_->>'doc_id') = td.doc_id
-            WHERE td.tenant_id = %s
-            GROUP BY td.doc_id, td.filename, td.file_type, td.parser_used,
-                     td.chunks_count, td.file_size, td.uploaded_at, td.pages, td.summary
-            ORDER BY td.uploaded_at DESC
-        """, [tenant_id]).fetchall()
+        async with get_pg_connection() as conn:
+            if is_super:
+                rows = conn.execute("""
+                    SELECT td.doc_id, td.filename, td.file_type, td.parser_used,
+                           td.chunks_count, td.file_size, td.uploaded_at, td.pages,
+                           td.summary, count(dd.id) as vector_chunks
+                    FROM t_document td
+                    LEFT JOIN data_documents dd
+                        ON COALESCE(dd.metadata_->>'source', dd.metadata_->>'doc_id') = td.doc_id
+                    GROUP BY td.doc_id, td.filename, td.file_type, td.parser_used,
+                             td.chunks_count, td.file_size, td.uploaded_at, td.pages, td.summary
+                    ORDER BY td.uploaded_at DESC
+                """).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT td.doc_id, td.filename, td.file_type, td.parser_used,
+                           td.chunks_count, td.file_size, td.uploaded_at, td.pages,
+                           td.summary, count(dd.id) as vector_chunks
+                    FROM t_document td
+                    LEFT JOIN data_documents dd
+                        ON COALESCE(dd.metadata_->>'source', dd.metadata_->>'doc_id') = td.doc_id
+                    WHERE td.tenant_id = %s
+                    GROUP BY td.doc_id, td.filename, td.file_type, td.parser_used,
+                             td.chunks_count, td.file_size, td.uploaded_at, td.pages, td.summary
+                    ORDER BY td.uploaded_at DESC
+                """, [tenant_id]).fetchall()
     except Exception as exc:
         logger.warning("_query_pg_documents failed: %s", exc)
         return None
-    finally:
-        if conn:
-            conn.close()
 
     docs = []
     for r in rows:
@@ -106,21 +109,44 @@ def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
     return docs
 
 
-def _get_chunks(doc_id: str) -> list[str]:
-    conn = None
+@router.get("/{doc_id}/download")
+async def download_document(doc_id: str, user: dict = Depends(require_permission("document:download"))):
+    """Download the original uploaded file."""
+    tenant_id = user.get("tenant_id")
+    async with get_pg_connection() as conn:
+        row = conn.execute(
+            "SELECT filename, file_type FROM t_document WHERE doc_id = %s AND tenant_id = %s",
+            [doc_id, tenant_id],
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(404, "文档不存在")
+
+    filename, file_type = row
+    ext = file_type or Path(filename).suffix
+    file_path = Path(settings.data_dir) / "documents" / f"{doc_id}{ext}"
+
+    if not file_path.is_file():
+        raise HTTPException(404, "原始文件不存在，可能已被清理")
+
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type="application/octet-stream",
+    )
+
+
+async def _get_chunks(doc_id: str) -> list[str]:
     try:
-        conn = get_pg_connection()
-        rows = conn.execute(
-            "SELECT text FROM data_documents WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id')=%s ORDER BY id",
-            [doc_id],
-        ).fetchall()
-        return [r[0][:500] for r in rows]
+        async with get_pg_connection() as conn:
+            rows = conn.execute(
+                "SELECT text FROM data_documents WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id')=%s ORDER BY id",
+                [doc_id],
+            ).fetchall()
+            return [r[0][:500] for r in rows]
     except Exception as exc:
         logger.warning("获取文档片段失败: %s → %s", doc_id, exc)
         return []
-    finally:
-        if conn:
-            conn.close()
 
 
 def _fmt_size(size_bytes: int) -> str:

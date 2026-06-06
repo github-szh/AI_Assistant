@@ -85,7 +85,7 @@ class QueryEngine:
 
         return question
 
-    def _retrieve(self, question: str, top_k: int, doc_ids: list[str] | None = None,
+    async def _retrieve(self, question: str, top_k: int, doc_ids: list[str] | None = None,
                   messages: list[dict] | None = None, tenant_id: int | None = None) -> dict | None:
         """Two-level retrieval with automatic summary-based document pre-filtering.
 
@@ -104,11 +104,11 @@ class QueryEngine:
         t_start = time.time()
         steps: list[dict] = []
 
-        def _do_retrieve(search_query: str, deep: bool = False, ids: list[str] | None = None) -> list | None:
+        async def _do_retrieve(search_query: str, deep: bool = False, ids: list[str] | None = None) -> list | None:
             try:
                 if deep:
-                    return self.retriever.retrieve_with_rerank(search_query, doc_ids=ids, tenant_id=tenant_id)
-                return self.retriever.retrieve(search_query, doc_ids=ids, tenant_id=tenant_id)
+                    return await self.retriever.retrieve_with_rerank(search_query, doc_ids=ids, tenant_id=tenant_id)
+                return await self.retriever.retrieve(search_query, doc_ids=ids, tenant_id=tenant_id)
             except (ImportError, ModuleNotFoundError) as exc:
                 logger.warning("Vector store not available: %s", exc)
                 return None
@@ -117,14 +117,14 @@ class QueryEngine:
         t_l1 = 0.0
         target_ids = doc_ids
         if target_ids is None:
-            doc_count = _count_documents(tenant_id)  # 权限与多租户：传入 tenant_id
+            doc_count = await _count_documents(tenant_id)  # 权限与多租户：传入 tenant_id
             if doc_count >= settings.two_stage_min_docs:
                 try:
                     from src.knowledge.embeddings import get_embedding_manager
                     from src.knowledge.index_store import _search_summaries
                     emb_mgr = get_embedding_manager()
                     query_emb = emb_mgr.encode_query(search_question)
-                    relevant = _search_summaries(query_emb, settings.summary_search_top_k, tenant_id=tenant_id)
+                    relevant = _search_summaries(query_emb, settings.summary_search_top_k, tenant_id=tenant_id)  # sync — uses get_pg_connection_sync
                     if relevant:
                         target_ids = [r["doc_id"] for r in relevant]
                         t_l1 = time.time() - t_start
@@ -136,7 +136,7 @@ class QueryEngine:
 
         # ── Level 2: chunk search (with optional doc filter) ──────
         t_coarse_start = time.time()
-        nodes = _do_retrieve(search_question, ids=target_ids)
+        nodes = await _do_retrieve(search_question, ids=target_ids)
         t_coarse = time.time() - t_coarse_start
         if nodes:
             steps.append({"label": "混合召回", "detail": f"向量搜索 + BM25 → RRF融合 → {len(nodes)} 条候选", "time": round(t_coarse, 2)})
@@ -166,7 +166,7 @@ class QueryEngine:
                 logger.debug("Stage 2 deep search (HyDE): %s (%.2fs)", hyde_text[:100], t_hyde)
                 steps.append({"label": "HyDE 查询重写", "detail": f"LLM 生成假设答案辅助检索", "time": round(t_hyde, 2)})
                 t_deep_start = time.time()
-                nodes = _do_retrieve(hyde_text, deep=True, ids=target_ids)
+                nodes = await _do_retrieve(hyde_text, deep=True, ids=target_ids)
                 t_deep = time.time() - t_deep_start
                 if not nodes:
                     return {"nodes": [], "sources": [], "context": "", "confidence": "low", "steps": steps}
@@ -240,7 +240,7 @@ class QueryEngine:
     # ------------------------------------------------------------------
     # sync query (kept for compatibility)
     # ------------------------------------------------------------------
-    def query(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
+    async def query(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
               messages: list[dict] | None = None, tenant_id: int | None = None) -> dict:
         """Full RAG pipeline: retrieve + generate, with caching."""
         # ── 缓存查询 ──────────────────────────────────────
@@ -253,7 +253,7 @@ class QueryEngine:
             logger.debug("RAG 缓存命中: '%s'", question[:60])
             return cached
 
-        result = self._retrieve(question, top_k, doc_ids, messages, tenant_id)
+        result = await self._retrieve(question, top_k, doc_ids, messages, tenant_id)
         if result is None:
             response = {"answer": _VECTOR_STORE_DOWN_MSG, "sources": []}
             cache.set(key, response, ttl=60)  # 缓存1分钟，避免重复检索
@@ -311,17 +311,21 @@ class QueryEngine:
         # TTL=300 秒（5分钟），之后重新检索生成
         # 缓存质检后的结果（含 quality 字段），避免重复质检
         cache.set(key, response, ttl=300)
-        logger.info("RAG 查询: '%s' → %d 条来源, 回答 %d 字", question, len(result["sources"]), len(answer))
+        logger.info("RAG_QUERY %s", json.dumps({
+            "question": question,
+            "answer": answer,
+            "sources": [{"filename": s.filename, "score": s.score, "snippet": s.snippet[:200]} for s in result["sources"]],
+        }, ensure_ascii=False))
         return response
 
     # ------------------------------------------------------------------
     # streaming query
     # ------------------------------------------------------------------
-    def query_stream(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
+    async def query_stream(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
                       messages: list[dict] | None = None, tenant_id: int | None = None):
         """Answer a question using RAG — yields SSE JSON lines for streaming."""
         # 权限与多租户：按租户隔离的流式 RAG 查询
-        result = self._retrieve(question, top_k, doc_ids, messages, tenant_id)
+        result = await self._retrieve(question, top_k, doc_ids, messages, tenant_id)
 
         if result is None:
             yield f"data: {json.dumps({'error': _VECTOR_STORE_DOWN_MSG})}\n\n"
@@ -407,7 +411,11 @@ class QueryEngine:
         # ── 流式结束标记 ─────────────────────────────────────
         # done 事件必须放在 quality 事件之后，因为前端收到 done 后停止读取
         yield f"data: {json.dumps({'done': True})}\n\n"
-        logger.info("RAG stream: '%s' → %d sources", question, len(result["sources"]))
+        logger.info("RAG_QUERY_STREAM %s", json.dumps({
+            "question": question,
+            "answer": "".join(_stream_chunks) if _stream_chunks else "",
+            "sources": [{"filename": s.filename, "score": s.score, "snippet": s.snippet[:200]} for s in result["sources"]],
+        }, ensure_ascii=False))
 
     def _generate_hypothetical(self, question: str) -> str | None:
         """HyDE: ask LLM to write a hypothetical answer, improve retrieval recall."""
@@ -430,17 +438,15 @@ class QueryEngine:
         return load_prompt("rag/query", context=context, question=question)
 
 
-def _count_documents(tenant_id: int | None = None) -> int:
+async def _count_documents(tenant_id: int | None = None) -> int:
     """Count documents in the knowledge base (from t_document metadata table)."""
-    """权限与多租户：按租户统计文档数"""
     try:
-        import psycopg
-        conn = psycopg.connect(settings.pg_dsn, connect_timeout=3)
-        count = conn.execute(
-            "SELECT COUNT(*) FROM t_document WHERE tenant_id = %s", [tenant_id],
-        ).fetchone()[0]
-        conn.close()
-        return count
+        from src.api.deps import get_pg_connection
+        async with get_pg_connection() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM t_document WHERE tenant_id = %s", [tenant_id],
+            ).fetchone()[0]
+            return count
     except Exception as exc:
         logger.warning("文档计数失败: %s, 默认 0（跳过两级检索）", exc)
         return 0

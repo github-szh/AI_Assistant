@@ -29,7 +29,7 @@ def _get_original_text(node) -> str:
 # ---------------------------------------------------------------------------
 # BM25 keyword search — bypasses llama_index, queries PG full-text index directly
 # ---------------------------------------------------------------------------
-def _bm25_search(query_tokens: str, top_k: int, doc_ids: list[str] | None = None,
+async def _bm25_search(query_tokens: str, top_k: int, doc_ids: list[str] | None = None,
                  tenant_id: int | None = None) -> list[dict]:
     """BM25 keyword recall via PostgreSQL full-text search.
 
@@ -60,9 +60,8 @@ def _bm25_search(query_tokens: str, top_k: int, doc_ids: list[str] | None = None
         where_clause = "AND " + " AND ".join(conditions)
 
     t_bm25_inner = time.monotonic()
-    import psycopg
-    conn = psycopg.connect(settings.pg_dsn, connect_timeout=5)
-    try:
+    from src.api.deps import get_pg_connection
+    async with get_pg_connection() as conn:
         rows = conn.execute(
             f"""
             SELECT node_id, text, metadata_,
@@ -81,8 +80,6 @@ def _bm25_search(query_tokens: str, top_k: int, doc_ids: list[str] | None = None
         ]
         logger.debug("BM25召回: %d条 (%.2fs)", len(result), time.monotonic() - t_bm25_inner)
         return result
-    finally:
-        conn.close()
 
 # ---------------------------------------------------------------------------
 # RRF (Reciprocal Rank Fusion) — fair score fusion across ranking sources
@@ -158,7 +155,7 @@ def _expand_to_parents(child_nodes: list, tenant_id: int | None = None) -> list:
         return child_nodes  # normal mode — no expansion needed
     # Batch fetch parent contexts
     from src.knowledge.index_store import _fetch_parent_contexts
-    parents = _fetch_parent_contexts(parent_ids, tenant_id=tenant_id)
+    parents = _fetch_parent_contexts(parent_ids, tenant_id=tenant_id)  # sync — uses get_pg_connection_sync
 
     if not parents:
         return child_nodes
@@ -212,7 +209,7 @@ class HybridRetriever:
     # ------------------------------------------------------------------
     # shared coarse retrieval (was duplicated in retrieve / retrieve_with_rerank)
     # ------------------------------------------------------------------
-    def _coarse_retrieve(self, query: str, doc_ids: list[str] | None = None,
+    async def _coarse_retrieve(self, query: str, doc_ids: list[str] | None = None,
                          tenant_id: int | None = None) -> list:
         """Two independent recall paths + RRF fusion, returns ranked node list.
 
@@ -276,7 +273,7 @@ class HybridRetriever:
             return []
         # Path 2: BM25 keyword search (graceful degradation when PG is down)
         try:
-            sparse_results = _bm25_search(tokenized_query, top_k=coarse_k, doc_ids=doc_ids, tenant_id=tenant_id)
+            sparse_results = await _bm25_search(tokenized_query, top_k=coarse_k, doc_ids=doc_ids, tenant_id=tenant_id)
         except Exception:
             logger.debug("BM25 search unavailable, using vector-only")
             return dense_nodes[:coarse_k]
@@ -304,19 +301,19 @@ class HybridRetriever:
     # ------------------------------------------------------------------
     # public retrieval methods
     # ------------------------------------------------------------------
-    def retrieve(self, query: str, doc_ids: list[str] | None = None,
+    async def retrieve(self, query: str, doc_ids: list[str] | None = None,
                  tenant_id: int | None = None) -> list:
         """Fast path: coarse retrieval → expand windows → top fine_k (no reranker)."""
-        fused_nodes = self._coarse_retrieve(query, doc_ids=doc_ids, tenant_id=tenant_id)
+        fused_nodes = await self._coarse_retrieve(query, doc_ids=doc_ids, tenant_id=tenant_id)
         if not fused_nodes:
             return []
         expanded = _expand_to_parents(fused_nodes, tenant_id=tenant_id)
         return expanded[:self.fine_k]
 
-    def retrieve_with_rerank(self, query: str, doc_ids: list[str] | None = None,
+    async def retrieve_with_rerank(self, query: str, doc_ids: list[str] | None = None,
                               tenant_id: int | None = None) -> list:
         """Deep path: coarse retrieval → expand windows → reranker → top fine_k."""
-        fused_nodes = self._coarse_retrieve(query, doc_ids=doc_ids, tenant_id=tenant_id)
+        fused_nodes = await self._coarse_retrieve(query, doc_ids=doc_ids, tenant_id=tenant_id)
         if not fused_nodes:
             return []
 

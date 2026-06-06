@@ -63,13 +63,18 @@ async def lifespan(app: FastAPI):
         get_embedding_manager()._ensure_model()
     except Exception:
         pass
-    # Pre-load reranker model (avoids ~10s cold-start on first deep search)
-    try:
-        from src.knowledge.reranker import get_reranker
-        get_reranker().warmup()
-    except Exception:
-        pass
+    # Pre-load reranker model in background (~23s, don't block startup)
+    def _warmup_reranker():
+        try:
+            from src.knowledge.reranker import get_reranker
+            get_reranker().warmup()
+        except Exception:
+            pass
+    threading.Thread(target=_warmup_reranker, daemon=True).start()
     yield
+    # 关闭连接池，释放所有数据库连接
+    from src.api.deps import close_pool
+    await close_pool()
 
 
 app = FastAPI(

@@ -4,12 +4,14 @@ Strategy: try pgvector first, fall back to ChromaDB (local file) when PG is unre
 Both implement the same LlamaIndex VectorStore interface, so retrieval code doesn't care.
 
 All heavy deps (llama_index, pgvector, chromadb, psycopg) are lazy-loaded.
+All DB connections go through the shared pool (with get_pg_connection() as conn).
 """
 
 import logging
 from functools import lru_cache
 from typing import Any
 
+from src.api.deps import get_pg_connection_sync
 from src.config import settings
 
 logger = logging.getLogger(__name__)
@@ -34,16 +36,8 @@ def create_vector_store() -> Any:
 def _check_pgvector() -> bool:
     """Check if pgvector is reachable."""
     try:
-        import psycopg
-        conn = psycopg.connect(
-            host=settings.pg_host,
-            port=settings.pg_port,
-            dbname=settings.pg_database,
-            user=settings.pg_user,
-            password=settings.pg_password,
-            connect_timeout=3,
-        )
-        conn.close()
+        with get_pg_connection_sync() as conn:
+            conn.execute("SELECT 1")
         return True
     except Exception:
         return False
@@ -68,46 +62,17 @@ def _create_pgvector_store() -> Any:
 
 
 def _init_pgvector_schema() -> None:
-    """Ensure pgvector extension is available and create ivfflat index.
-
-    Table creation is handled automatically by PGVectorStore's _initialize()
-    method (creates table named 'data_<table_name>').
-
-    The ivfflat index accelerates similarity search — without it, every query
-    does a full table scan (O(n)). With the index, it drops to O(log n).
-    - lists=100 is fine for up to ~1M rows; increase to ~sqrt(n) as data grows.
-    - vector_cosine_ops matches the cosine distance metric used by Zhipu embedding.
-    """
+    """Ensure pgvector extension is available and create ivfflat index."""
     try:
-        import psycopg
-        conn = psycopg.connect(
-            host=settings.pg_host,
-            port=settings.pg_port,
-            dbname=settings.pg_database,
-            user=settings.pg_user,
-            password=settings.pg_password,
-            connect_timeout=5,
-        )
-        conn.autocommit = True
-        # 启用 pgvector 扩展：提供 vector 数据类型、余弦距离等向量运算
-        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-
-        # ── ivfflat 近似最近邻搜索索引 ─────────────────────
-        # 不加索引时每次向量检索要全表扫描 O(n)，数据越多越慢。
-        # ivfflat 将向量空间划分为 lists 个簇，只搜索最近的几个簇，
-        # 时间复杂度降至 O(log n)，万级以上数据提速 10~100 倍。
-        #
-        # vector_cosine_ops：余弦相似度算子，与智谱 embedding-3 的
-        # 距离度量（cosine distance）一致，确保索引被正确使用。
-        #
-        # lists=100：质心数量，推荐 ≈ sqrt(n)。100 适合百万级以内数据。
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_data_documents_embedding
-            ON data_documents
-            USING ivfflat (embedding vector_cosine_ops)
-            WITH (lists = 100)
-        """)
-        conn.close()
+        with get_pg_connection_sync() as conn:
+            # putconn 归还时已设 autocommit=True，连接处于 IDLE 状态
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_data_documents_embedding
+                ON data_documents
+                USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = 100)
+            """)
         logger.info("pgvector extension + ivfflat index ensured")
     except Exception as exc:
         logger.warning("Failed to init pgvector schema/index: %s", exc)
@@ -127,85 +92,61 @@ def _create_chroma_store() -> Any:
 # ---------------------------------------------------------------------------
 def _ensure_chunk_contexts_table() -> None:
     """Create the parent-chunk lookup table (no vector — plain text storage)."""
-    """权限与多租户：chunk_contexts 表增加 tenant_id 列"""
     try:
-        import psycopg
-        conn = psycopg.connect(
-            host=settings.pg_host, port=settings.pg_port,
-            dbname=settings.pg_database, user=settings.pg_user,
-            password=settings.pg_password, connect_timeout=5,
-        )
-        conn.autocommit = True
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS chunk_contexts (
-                parent_id TEXT PRIMARY KEY,
-                doc_id TEXT NOT NULL,
-                content TEXT NOT NULL,
-                filename TEXT,
-                chunk_index INTEGER,
-                tenant_id INT
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_chunk_contexts_doc_id
-            ON chunk_contexts (doc_id)
-        """)
-        conn.close()
+        with get_pg_connection_sync() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS chunk_contexts (
+                    parent_id TEXT PRIMARY KEY, doc_id TEXT NOT NULL,
+                    content TEXT NOT NULL, filename TEXT,
+                    chunk_index INTEGER, tenant_id INT
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chunk_contexts_doc_id
+                ON chunk_contexts (doc_id)
+            """)
     except Exception as exc:
         logger.warning("Failed to ensure chunk_contexts table: %s", exc)
 
 
 def _insert_parent_contexts(rows: list[dict]) -> None:
     """Batch-insert parent chunks into chunk_contexts."""
-    """权限与多租户：插入 parent chunk 时保留 tenant_id"""
     if not rows:
         return
     try:
-        import psycopg
-        conn = psycopg.connect(
-            host=settings.pg_host, port=settings.pg_port,
-            dbname=settings.pg_database, user=settings.pg_user,
-            password=settings.pg_password, connect_timeout=5,
-        )
-        for r in rows:
-            conn.execute(
-                """INSERT INTO chunk_contexts (parent_id, doc_id, content, filename, chunk_index, tenant_id)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (parent_id) DO NOTHING""",
-                [r["parent_id"], r["doc_id"], r["content"], r.get("filename", ""),
-                 r.get("chunk_index", 0), r.get("tenant_id")],
-            )
-        conn.commit()
-        conn.close()
+        with get_pg_connection_sync() as conn:
+            for r in rows:
+                conn.execute(
+                    """INSERT INTO chunk_contexts (parent_id, doc_id, content, filename, chunk_index, tenant_id)
+                       VALUES (%s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (parent_id) DO NOTHING""",
+                    [r["parent_id"], r["doc_id"], r["content"], r.get("filename", ""),
+                     r.get("chunk_index", 0), r.get("tenant_id")],
+                )
+            conn.commit()
     except Exception as exc:
         logger.warning("Failed to insert parent contexts: %s", exc)
 
-"""Batch-fetch parent chunks by ID. Returns {parent_id: {content, doc_id, ...}}."""
 def _fetch_parent_contexts(parent_ids: list[str], tenant_id: int | None = None) -> dict[str, dict]:
+    """Batch-fetch parent chunks by ID. Returns {parent_id: {content, doc_id, ...}}."""
     if not parent_ids:
         return {}
     try:
-        import psycopg
-        conn = psycopg.connect(
-            host=settings.pg_host, port=settings.pg_port,
-            dbname=settings.pg_database, user=settings.pg_user,
-            password=settings.pg_password, connect_timeout=5,
-        )
-        if tenant_id is not None:
-            rows = conn.execute(
-                "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s) AND tenant_id = %s",
-                [parent_ids, tenant_id],
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s)",
-                [parent_ids],
-            ).fetchall()
-        conn.close()
-        return {
-            r[0]: {"doc_id": r[1], "content": r[2], "filename": r[3], "chunk_index": r[4]}
-            for r in rows
-        }
+        with get_pg_connection_sync() as conn:
+            if tenant_id is not None:
+                rows = conn.execute(
+                    "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s) AND tenant_id = %s",
+                    [parent_ids, tenant_id],
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s)",
+                    [parent_ids],
+                ).fetchall()
+            return {
+                r[0]: {"doc_id": r[1], "content": r[2], "filename": r[3], "chunk_index": r[4]}
+                for r in rows
+            }
     except Exception as exc:
         logger.warning("父块获取失败: %d IDs → %s", len(parent_ids), exc)
         return {}
@@ -215,28 +156,20 @@ def _fetch_parent_contexts(parent_ids: list[str], tenant_id: int | None = None) 
 # ---------------------------------------------------------------------------
 def _ensure_summary_collection() -> None:
     """Create the document-summary vector table."""
-    """权限与多租户：doc_summaries 表增加 tenant_id 列"""
     try:
-        import psycopg
-        conn = psycopg.connect(
-            host=settings.pg_host, port=settings.pg_port,
-            dbname=settings.pg_database, user=settings.pg_user,
-            password=settings.pg_password, connect_timeout=5,
-        )
-        conn.autocommit = True
-        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS doc_summaries (
-                doc_id TEXT PRIMARY KEY,
-                summary TEXT NOT NULL,
-                embedding vector(1024),
-                filename TEXT,
-                chunk_count INTEGER,
-                tenant_id INT,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        conn.close()
+        with get_pg_connection_sync() as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS doc_summaries (
+                    doc_id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    embedding vector(1024),
+                    filename TEXT,
+                    chunk_count INTEGER,
+                    tenant_id INT,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
     except Exception as exc:
         logger.warning("Failed to ensure doc_summaries table: %s", exc)
 
@@ -246,25 +179,18 @@ def _insert_summary(
     filename: str = "", chunk_count: int = 0, tenant_id: int | None = None,
 ) -> None:
     """Insert or update a document summary with its embedding."""
-    """权限与多租户：插入文档摘要时保存 tenant_id"""
     try:
-        import psycopg
-        conn = psycopg.connect(
-            host=settings.pg_host, port=settings.pg_port,
-            dbname=settings.pg_database, user=settings.pg_user,
-            password=settings.pg_password, connect_timeout=5,
-        )
-        conn.execute(
-            """INSERT INTO doc_summaries (doc_id, summary, embedding, filename, chunk_count, tenant_id)
-               VALUES (%s, %s, %s, %s, %s, %s)
-               ON CONFLICT (doc_id) DO UPDATE
-               SET summary=EXCLUDED.summary, embedding=EXCLUDED.embedding,
-                   filename=EXCLUDED.filename, chunk_count=EXCLUDED.chunk_count,
-                   tenant_id=EXCLUDED.tenant_id""",
-            [doc_id, summary, embedding, filename, chunk_count, tenant_id],
-        )
-        conn.commit()
-        conn.close()
+        with get_pg_connection_sync() as conn:
+            conn.execute(
+                """INSERT INTO doc_summaries (doc_id, summary, embedding, filename, chunk_count, tenant_id)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (doc_id) DO UPDATE
+                   SET summary=EXCLUDED.summary, embedding=EXCLUDED.embedding,
+                       filename=EXCLUDED.filename, chunk_count=EXCLUDED.chunk_count,
+                       tenant_id=EXCLUDED.tenant_id""",
+                [doc_id, summary, embedding, filename, chunk_count, tenant_id],
+            )
+            conn.commit()
     except Exception as exc:
         logger.warning("Failed to insert summary for %s: %s", doc_id, exc)
 
@@ -272,31 +198,24 @@ def _insert_summary(
 def _search_summaries(query_embedding: list[float], top_k: int = 3,
                        tenant_id: int | None = None) -> list[dict]:
     """Level 1: search document summaries, return top-k relevant doc info."""
-    """权限与多租户：按租户搜索文档摘要"""
     try:
-        import psycopg
-        conn = psycopg.connect(
-            host=settings.pg_host, port=settings.pg_port,
-            dbname=settings.pg_database, user=settings.pg_user,
-            password=settings.pg_password, connect_timeout=5,
-        )
-        rows = conn.execute(
-            """
-            SELECT doc_id, summary, filename, chunk_count,
-                   1 - (embedding <=> %s::vector) AS similarity
-            FROM doc_summaries
-            WHERE tenant_id = %s
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-            """,
-            [query_embedding, tenant_id, query_embedding, top_k],
-        ).fetchall()
-        conn.close()
-        return [
-            {"doc_id": r[0], "summary": r[1], "filename": r[2],
-             "chunk_count": r[3], "similarity": r[4]}
-            for r in rows
-        ]
+        with get_pg_connection_sync() as conn:
+            rows = conn.execute(
+                """
+                SELECT doc_id, summary, filename, chunk_count,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM doc_summaries
+                WHERE tenant_id = %s
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                [query_embedding, tenant_id, query_embedding, top_k],
+            ).fetchall()
+            return [
+                {"doc_id": r[0], "summary": r[1], "filename": r[2],
+                 "chunk_count": r[3], "similarity": r[4]}
+                for r in rows
+            ]
     except Exception as exc:
         logger.warning("摘要搜索失败: %s, 降级为全库搜索", exc)
         return []

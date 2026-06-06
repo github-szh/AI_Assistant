@@ -8,7 +8,9 @@ Provides:
 import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from src.api.permissions import require_permission
 from fastapi.responses import HTMLResponse
 
 from src.monitoring.metrics import (
@@ -67,7 +69,7 @@ async def phoenix_info():
 
 
 @router.get("/monitoring")
-async def monitoring_json():
+async def monitoring_json(user: dict = Depends(require_permission("monitoring:view"))):
     now = time.time()
 
     # System resources (read directly via psutil, bypass Prometheus Gauge corruption)

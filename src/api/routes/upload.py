@@ -1,5 +1,6 @@
 """POST /upload — upload and parse documents, store metadata in t_document table."""
 
+import asyncio
 import hashlib
 import logging
 import uuid
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Form, Query, UploadFile, File, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from src.api.deps import get_document_loader, get_pg_connection
+from src.api.deps import get_document_loader, get_pg_connection, get_pg_connection_sync
 from src.api.schemas import UploadResponse
 from src.api.permissions import require_permission
 from src.config import settings
@@ -31,8 +32,7 @@ async def check_duplicate(req: CheckRequest, user: dict = Depends(require_permis
     """Check if a document with the same name and size already exists."""
     # 权限与多租户：按租户检查重复
     tenant_id = user.get("tenant_id")
-    conn = get_pg_connection()
-    try:
+    async with get_pg_connection() as conn:
         row = conn.execute(
             "SELECT doc_id, filename FROM t_document WHERE filename = %s AND file_size = %s AND tenant_id = %s",
             [req.filename, req.file_size, tenant_id],
@@ -40,8 +40,6 @@ async def check_duplicate(req: CheckRequest, user: dict = Depends(require_permis
         if row:
             return {"exists": True, "doc_id": row[0], "filename": row[1]}
         return {"exists": False, "doc_id": None, "filename": None}
-    finally:
-        conn.close()
 
 
 @router.post("", response_model=UploadResponse)
@@ -70,14 +68,11 @@ async def upload_document(
     ext = Path(filename).suffix
 
     # MD5 dedup — within tenant scope
-    conn = get_pg_connection()
-    try:
+    async with get_pg_connection() as conn:
         existing = conn.execute(
             "SELECT doc_id, filename FROM t_document WHERE md5_hash=%s AND tenant_id=%s",
             [file_hash, tenant_id],
         ).fetchone()
-    finally:
-        conn.close()
 
     if existing:
         return UploadResponse(
@@ -159,8 +154,8 @@ async def upload_document(
                 embed_mgr = get_embedding_manager()
                 summary_emb = embed_mgr.encode_query(summary)
                 from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
-                _ensure_summary_collection()
-                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks), tenant_id=tenant_id)
+                await asyncio.to_thread(_ensure_summary_collection)
+                await asyncio.to_thread(_insert_summary, doc_id, summary, summary_emb, filename, len(chunks), tenant_id=tenant_id)
             except Exception:
                 logger.warning("Failed to index document summary", exc_info=True)
 
@@ -187,8 +182,7 @@ async def upload_document(
             logger.warning("Ingestion skipped (vector store unavailable): %s", exc)
 
     # 权限与多租户：保存文档元数据时写入 tenant_id
-    conn2 = get_pg_connection()
-    try:
+    with get_pg_connection() as conn2:
         conn2.execute(
             """INSERT INTO t_document
                (doc_id, filename, file_type, file_size, pages, parser_used,
@@ -198,8 +192,6 @@ async def upload_document(
              len(chunks), summary, file_hash, user["user_id"], tenant_id],
         )
         conn2.commit()
-    finally:
-        conn2.close()
 
     if parse_error:
         status = "parse_failed"
@@ -258,19 +250,16 @@ async def upload_stream(
 
         # Replace: delete old data first (within tenant scope)
         if replace_doc_id:
-            _delete_document(replace_doc_id, tenant_id)  # 权限与多租户：传入 tenant_id
+            await asyncio.to_thread(_delete_document, replace_doc_id, tenant_id)  # 权限与多租户：传入 tenant_id
             yield f"data: {_json.dumps({'step':'read','msg':'已删除旧文档，重新解析中...'})}\n\n"
 
         # Dedup (within tenant scope)
         if not replace_doc_id:
-            conn = get_pg_connection()
-            try:
+            async with get_pg_connection() as conn:
                 existing = conn.execute(
                     "SELECT doc_id FROM t_document WHERE md5_hash=%s AND tenant_id=%s",
                     [file_hash, tenant_id],
                 ).fetchone()
-            finally:
-                conn.close()
             if existing:
                 yield f"data: {_json.dumps({'step':'done','msg':'文件已存在，跳过','status':'duplicate'})}\n\n"
                 return
@@ -373,14 +362,13 @@ async def upload_stream(
                 embed_mgr = get_embedding_manager()
                 summary_emb = embed_mgr.encode_query(summary)
                 from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
-                _ensure_summary_collection()
-                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks) if chunks else 0, tenant_id=tenant_id)
+                await asyncio.to_thread(_ensure_summary_collection)
+                await asyncio.to_thread(_insert_summary, doc_id, summary, summary_emb, filename, len(chunks) if chunks else 0, tenant_id=tenant_id)
             except Exception:
                 logger.warning("Failed to index document summary", exc_info=True)
 
         # Save metadata to t_document
-        conn = get_pg_connection()
-        try:
+        async with get_pg_connection() as conn:
             conn.execute(
                 """INSERT INTO t_document
                    (doc_id, filename, file_type, file_size, pages, parser_used,
@@ -390,8 +378,6 @@ async def upload_stream(
                  len(chunks) if chunks else 0, summary, file_hash, user["user_id"], tenant_id],
             )
             conn.commit()
-        finally:
-            conn.close()
 
         if parse_error:
             yield f"data: {_json.dumps({'step':'done','msg':f'解析失败: {parse_error}','doc_id':doc_id,'status':'parse_failed'})}\n\n"
@@ -410,30 +396,35 @@ async def upload_stream(
 
 def _delete_document(doc_id: str, tenant_id: int | None = None) -> None:
     """Remove a document from vector store, metadata table, and local filesystem."""
-    # 权限与多租户：按租户删除
-    conn = get_pg_connection()
-    try:
-        conn.execute(
-            """DELETE FROM data_documents
-               WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s
-               AND metadata_->>'tenant_id' = %s""",
-            [doc_id, str(tenant_id)],
-        )
-        conn.execute(
-            "DELETE FROM t_document WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        )
-        conn.execute(
-            "DELETE FROM doc_summaries WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        )
-        conn.execute(
-            "DELETE FROM chunk_contexts WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        )
+    with get_pg_connection_sync() as conn:
+        if tenant_id is None:
+            conn.execute(
+                "DELETE FROM data_documents WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s",
+                [doc_id],
+            )
+            conn.execute("DELETE FROM t_document WHERE doc_id = %s", [doc_id])
+            conn.execute("DELETE FROM doc_summaries WHERE doc_id = %s", [doc_id])
+            conn.execute("DELETE FROM chunk_contexts WHERE doc_id = %s", [doc_id])
+        else:
+            conn.execute(
+                """DELETE FROM data_documents
+                   WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s
+                   AND metadata_->>'tenant_id' = %s""",
+                [doc_id, str(tenant_id)],
+            )
+            conn.execute(
+                "DELETE FROM t_document WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            )
+            conn.execute(
+                "DELETE FROM doc_summaries WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            )
+            conn.execute(
+                "DELETE FROM chunk_contexts WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            )
         conn.commit()
-    finally:
-        conn.close()
 
     docs_dir = Path(settings.data_dir) / "documents"
     if docs_dir.exists():
