@@ -15,6 +15,7 @@ from src.quality.config import (
     load_safety_categories_from_yaml,
 )
 from src.quality.factuality import FactualityChecker
+from src.quality.vector_factuality import VectorFactualityChecker
 from src.quality.guard import QualityGuard
 from src.quality.intervention import InterventionEngine
 from src.quality.keyword_filter import KeywordFilter
@@ -33,6 +34,7 @@ __all__ = [
     # 检查器
     "SafetyChecker",
     "FactualityChecker",
+    "VectorFactualityChecker",
     "RelevanceChecker",
     # 干预引擎
     "InterventionEngine",

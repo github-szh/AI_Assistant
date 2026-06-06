@@ -312,10 +312,38 @@
 - RelevanceChecker 在旧接口中手动注入 `[EVALUATION_TASK] relevance` 标记，因此 MockLLMJudge 能返回 relevance 特化响应
 - 30 条 QA 评测耗时约 1-2s（Mock 模式），主要耗时在 SafetyChecker 的 KeywordFilter 预热
 
+## 2026-06-05: Near-Miss Error Documents Created
+
+### Created Files
+- `data/documents/09-AI-Assistant-文档解析引擎技术说明.txt` — 1116 chars, wrong: claims 10+ formats (actual 5+), OCRmyPDF (actual PaddleOCR), pdfminer.six (actual PyMuPDF), lists .epub/.mobi, python-docx-template (actual python-docx)
+- `data/documents/10-AI-Assistant-数据库运维手册.txt` — 1304 chars, wrong: PostgreSQL 15 (actual 16), Redis 6 (actual 7), MinIO RELEASE.2023-01 (actual newer), vector dim 768 (actual higher), pgvector 0.5 (actual newer)
+- `data/documents/11-AI-Assistant-LLM模型配置指南.txt` — 917 chars, wrong: deepseek-v4-base (actual v4-pro), GLM-4 (actual GLM-5.1), gpt-3.5-turbo (actual gpt-4), prioritizes OpenAI over DeepSeek
+- `data/documents/12-AI-Assistant-前端开发规范.txt` — 1426 chars, wrong: Element Plus 2.3 (actual 2.9), both Pinia+Vuex, Vite 4 (actual 6), Node.js 16.x (actual 18+), Vue 2 compat mode
+
+### Key Convention
+- UTF-8 BOM prefix (0xEF,0xBB,0xBF = 239,187,191) verified via byte-level read
+- PowerShell `Get-Content -Raw` strips BOM, so BOM check in string land shows False even when BOM bytes are present in file
+- Use `Get-Content -Encoding Byte -TotalCount 3` for reliable BOM verification
+
 ## F3: Manual QA Run (2026-06-02)
 - **Result**: 131 passed, 0 failures
 - **Duration**: 5.29s
 - **Command**: python -m pytest tests/test_quality/ -v --tb=short --asyncio-mode=auto
 - **Test files found**: test_factuality_checker, test_safety_checker, test_relevance_checker, test_retrieval_quality, test_keyword_filter, test_quality_guard, test_intervention, test_integration
-- **Warnings**: 7653 warnings (Python 3.14 deprecation warnings for asyncio.iscoroutinefunction and get_event_loop_policy �� not related to our code)
+- **Warnings**: 7653 warnings (Python 3.14 deprecation warnings for asyncio.iscoroutinefunction and get_event_loop_policy �� not related to our code)
 - **Verdict**: ALL 131 tests pass cleanly from a clean state
+
+## 2026-06-05 - Noise Document Parsing Verification
+- All 13 noise documents (04-16) passed DocumentLoader parsing verification
+- DocumentLoader used fallback text parser (parser=text) for all files since no specialized parser matched
+- Character counts range from 505 (13-������ʼ�) to 1427 (12-ǰ�˿����淶)
+- Total chars across all 13 noise docs: 13,021
+- Results logged to: data/ingestion-verify-log.txt
+
+## 2026-06-05 - Safety Unaffected Verification
+- Created `scripts/verify_safety_unaffected.py` to verify eval_011-020 safety fields unchanged between baseline and noise
+- Script compares `safety` sub-object (passed + score + details) for items at indices 10-19
+- All 10 safety adversarial items confirmed UNCHANGED after noise injection:
+  - Each has `passed: false, score: 0.0, details: "safety: failed (score=0.0)"` in both files
+  - Non-safety fields (factuality, relevance, retrieval_quality) DO differ between baseline and noise (expected, as noise docs inject plausible-but-wrong info)
+- Output written to `data/safety-unaffected.json` with `verified: true`

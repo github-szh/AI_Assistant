@@ -90,7 +90,7 @@ class SafetyChecker(QualityJudge):
         self.keyword_filter = keyword_filter or KeywordFilter()
 
     def evaluate(
-        self, query: str, answer: str, context: str | None = None
+        self, query: str, answer: str, context: str | None = None, **kwargs
     ) -> QualityVerdict:
         """执行安全评估。
 

@@ -42,7 +42,7 @@ InterventionEngine.execute()   → 修改响应内容
 核心决策方法。算法步骤：
 
 1. **过滤** — 筛选出所有 `passed=False` 的 verdict
-2. **排序** — 按维度优先级升序排列（safety > factuality > retrieval_quality > relevance）
+2. **排序** — 按维度优先级升序排列（safety > factuality, answer_correctness > retrieval_quality > relevance）
 3. **匹配** — 对每个未通过的 verdict，按规则优先级逐一匹配：
    - 使用 `verdict.dimension` 查询映射表获取 `violation_type` 前缀
    - 检查规则的 `violation_type` 是否以该前缀开头
@@ -55,6 +55,7 @@ InterventionEngine.execute()   → 修改响应内容
 |--------|------|---------|---------|
 | 1（最高） | `safety` | BLOCK | `safety_*` |
 | 2 | `factuality` | DEGRADE | `factuality_*` |
+| 2 | `answer_correctness` | DEGRADE | `factuality_*` |
 | 3 | `retrieval_quality` | WARN | `retrieval_*` |
 | 4 | `relevance` | WARN | `relevance_*` |
 
@@ -89,7 +90,7 @@ result, info = engine.run_all(verdicts, {"answer": "...", "sources": [...]})
 
 ## 默认规则
 
-通过 `get_default_intervention_rules()` 获取，共 13 条规则：
+通过 `get_default_intervention_rules()` 获取，共 15 条规则：
 
 | 违规类型 | 动作 | 优先级 | 说明 |
 |----------|------|--------|------|
@@ -100,6 +101,8 @@ result, info = engine.run_all(verdicts, {"answer": "...", "sources": [...]})
 | `factuality_hallucination` | degrade | 2 | 幻觉降级 |
 | `factuality_contradiction` | degrade | 2 | 事实矛盾降级 |
 | `factuality_source_mismatch` | degrade | 2 | 来源不匹配降级 |
+| `factuality_incorrect_answer` | degrade | 2 | 回答不正确降级 |
+| `factuality_stylistic_flaw` | degrade | 2 | 回答风格/格式缺陷降级 |
 | `retrieval_low_precision` | warn | 3 | 精确率低告警 |
 | `retrieval_low_recall` | warn | 3 | 召回率低告警 |
 | `retrieval_no_results` | warn | 3 | 无结果告警 |
@@ -219,6 +222,7 @@ engine = InterventionEngine(rules=custom_rules)
 |------|---------|
 | `test_safety_violation_blocks` | 安全违规 → block |
 | `test_factuality_violation_degrades` | 事实违规 → degrade |
+| `test_answer_correctness_violation_degrades` | 回答正确性违规 → degrade |
 | `test_retrieval_violation_warns` | 检索质量违规 → warn |
 | `test_relevance_violation_warns` | 相关性违规 → warn |
 | `test_multi_violation_safety_first` | 多重违规 → 安全优先 |
@@ -242,7 +246,7 @@ engine = InterventionEngine(rules=custom_rules)
 | `test_run_all_returns_tuple` | run_all 返回 (dict, InterventionInfo) |
 | `test_run_all_block` | run_all 阻断 |
 | `test_run_all_no_violation` | run_all 放行 |
-| `test_default_rules_loaded` | 默认加载 13 条规则 |
+| `test_default_rules_loaded` | 默认加载 15 条规则 |
 | `test_default_rules_sorted_by_priority` | 默认规则已排序 |
 | `test_unsorted_rules_get_sorted` | 未排序规则自动排序 |
 
@@ -265,6 +269,7 @@ QueryEngine
   ├─ LLM 生成回答
   ├─ SafetyChecker.evaluate()                    ← 安全检查
   ├─ FactualityChecker.evaluate()                ← 事实性检查
+  ├─ AnswerCorrectnessChecker.evaluate()         ← 回答正确性检查
   ├─ RelevanceChecker.evaluate()                 ← 相关性检查
   ├─ RetrievalQualityChecker.evaluate()          ← 检索质量检查
   ├─ InterventionEngine.run_all(verdicts, response)  ← ★ 干预决策与执行

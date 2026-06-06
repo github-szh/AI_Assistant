@@ -52,12 +52,13 @@ from src.quality.retrieval_quality import RetrievalQualityChecker
 logger = logging.getLogger(__name__)
 
 # LLM 评判维度列表（需要调用 LLM 的维度）
-_LLM_DIMENSIONS = ["safety", "factuality", "relevance"]
+_LLM_DIMENSIONS = ["safety", "factuality", "answer_correctness", "relevance"]
 
 # 维度名称的可读中文映射（用于日志输出）
 _DIMENSION_LABELS: dict[str, str] = {
     "safety": "安全",
     "factuality": "事实性",
+    "answer_correctness": "答案正确性",
     "relevance": "相关性",
     "retrieval_quality": "检索质量",
 }
@@ -108,6 +109,7 @@ class QualityGuard:
         answer: str,
         context: str,
         sources: list,
+        **kwargs,
     ) -> tuple[dict[str, Any], InterventionInfo]:
         """执行全维度质量评估与干预。
 
@@ -146,9 +148,9 @@ class QualityGuard:
         if not available:
             logger.debug("无可用 LLM 质检器，跳过安全/事实性/相关性评估")
         elif self.config.quality_parallel_eval:
-            self._run_parallel(available, query, answer, context, verdicts)
+            self._run_parallel(available, query, answer, context, verdicts, sources=sources, **kwargs)
         else:
-            self._run_sequential(available, query, answer, context, verdicts)
+            self._run_sequential(available, query, answer, context, verdicts, sources=sources, **kwargs)
 
         # ── 步骤 3 & 4：汇总 → 干预引擎 → 执行干预 ──────
         original_response: dict[str, Any] = {
@@ -209,6 +211,8 @@ class QualityGuard:
         answer: str,
         context: str,
         verdicts: list[QualityVerdict],
+        sources: list | None = None,
+        **kwargs,
     ) -> None:
         """并行执行多个 LLM 质检维度的 evaluate() 方法。
 
@@ -222,6 +226,7 @@ class QualityGuard:
             answer: 模型回答。
             context: 检索上下文。
             verdicts: 用于收集评估结果的列表（原地追加）。
+            sources: 来源列表（透传至支持 sources 的 checker，如 VectorFactualityChecker）。
         """
         n = len(checkers)
         timeout_per = self.config.quality_judge_timeout_s
@@ -229,7 +234,7 @@ class QualityGuard:
 
         with ThreadPoolExecutor(max_workers=n) as executor:
             future_to_name = {
-                executor.submit(checker.evaluate, query, answer, context): name
+                executor.submit(checker.evaluate, query, answer, context, sources=sources, **kwargs): name
                 for name, checker in checkers.items()
             }
 
@@ -275,6 +280,8 @@ class QualityGuard:
         answer: str,
         context: str,
         verdicts: list[QualityVerdict],
+        sources: list | None = None,
+        **kwargs,
     ) -> None:
         """串行执行多个 LLM 质检维度的 evaluate() 方法。
 
@@ -284,11 +291,12 @@ class QualityGuard:
             answer: 模型回答。
             context: 检索上下文。
             verdicts: 用于收集评估结果的列表（原地追加）。
+            sources: 来源列表（透传至支持 sources 的 checker，如 VectorFactualityChecker）。
         """
         for name, checker in checkers.items():
             label = _DIMENSION_LABELS.get(name, name)
             try:
-                verdict = checker.evaluate(query, answer, context)
+                verdict = checker.evaluate(query, answer, context, sources=sources, **kwargs)
                 verdicts.append(verdict)
                 logger.debug("质检维度 '%s'(%s) 完成: passed=%s", name, label, verdict.passed)
             except Exception as exc:

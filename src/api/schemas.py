@@ -66,6 +66,7 @@ class QueryRequest(BaseModel):
     doc_ids: list[str] | None = None
     top_k: int = Field(default=5, ge=1, le=50)
     messages: list[dict] | None = None  # 最近几轮对话，用于查询改写
+    ground_truth: str | None = None  # 标准答案，用于答案正确性校验
 
 
 class SourceInfo(BaseModel):
@@ -168,6 +169,22 @@ class SourceInfo(BaseModel):
 # 注: quality 事件直接用 dict + json.dumps 发送，与现有 SSE 模式一致。
 #     不需要为 quality 事件创建独立的 Pydantic 模型。
 # ═══════════════════════════════════════════════════════════════
+
+class VerdictDetail(BaseModel):
+    """单个质检维度的判定结果（前端展示用）"""
+    dimension: str = Field(description="质检维度")
+    passed: bool = Field(description="是否通过")
+    score: float = Field(ge=0.0, le=1.0, description="得分 0-1")
+    details: str = Field(default="", description="详细说明")
+
+
+class EvalResponse(BaseModel):
+    """RAG 测评响应：回答 + 来源 + 四维度质检结果"""
+    answer: str = Field(description="模型回答")
+    sources: list["SourceInfo"] = Field(default_factory=list, description="检索来源")
+    quality: dict[str, "VerdictDetail"] = Field(default_factory=dict, description="各维度质检结果")
+    intervention: "InterventionInfo | None" = Field(default=None, description="干预决策")
+
 
 class QualityVerdict(BaseModel):
     """单个质检维度的判定结果"""

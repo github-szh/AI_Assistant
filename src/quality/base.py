@@ -114,7 +114,7 @@ class QualityJudge(ABC):
 
     @abstractmethod
     def evaluate(
-        self, query: str, answer: str, context: str | None = None
+        self, query: str, answer: str, context: str | None = None, **kwargs
     ) -> QualityVerdict:
         """执行单个维度的质量评估。
 
@@ -125,6 +125,7 @@ class QualityJudge(ABC):
             query: 用户原始问题
             answer: 模型生成的回答
             context: 检索到的上下文（可选，用于事实性/相关性评估）
+            **kwargs: 额外参数（如 sources），由具体子类选择性使用
 
         Returns:
             QualityVerdict: 包含维度名、是否通过、得分和详细说明的评估结果
