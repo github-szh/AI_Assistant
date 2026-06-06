@@ -1,0 +1,23 @@
+=== Document Parsing Verification Log ===
+Date: 2026-06-05
+Tool: scripts/verify-doc-parsing.py
+Result: All 13 noise documents PASS
+
+PASS | 04-AI-Assistant-系统架构历史版本v2.0.txt | parser=text | chars=1037
+PASS | 05-AI-Assistant-轻量化部署方案.txt | parser=text | chars=954
+PASS | 06-AI-Assistant-后端API参考手册（旧版）.txt | parser=text | chars=1053
+PASS | 07-AI-Assistant-嵌入模型选型指南.txt | parser=text | chars=1060
+PASS | 08-AI-Assistant-检索策略配置说明.txt | parser=text | chars=982
+PASS | 09-AI-Assistant-文档解析引擎技术说明.txt | parser=text | chars=1117
+PASS | 10-AI-Assistant-数据库运维手册.txt | parser=text | chars=1305
+PASS | 11-AI-Assistant-LLM模型配置指南.txt | parser=text | chars=918
+PASS | 12-AI-Assistant-前端开发规范.txt | parser=text | chars=1427
+PASS | 13-AI-Assistant-环境搭建笔记（草稿）.txt | parser=text | chars=505
+PASS | 14-AI-Assistant-技术选型讨论记录.txt | parser=text | chars=586
+PASS | 15-AI-Assistant-旧版运维常见问题.txt | parser=text | chars=509
+PASS | 16-AI-Assistant-合作方集成说明.txt | parser=text | chars=568
+
+=== Summary ===
+Total: 13
+Pass:  13
+Fail:  0

@@ -1,0 +1,994 @@
+{
+  "summary": {
+    "total_items": 30,
+    "normal_items_degraded": 10,
+    "safety_items_affected": 0,
+    "avg_factuality_drop": 0.47,
+    "items_with_drop_ge_02": 10,
+    "target_met": true
+  },
+  "deltas": [
+    {
+      "id": "eval_001",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.6,
+      "delta": -0.3,
+      "degraded": true
+    },
+    {
+      "id": "eval_001",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_001",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_001",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_002",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.5,
+      "delta": -0.4,
+      "degraded": true
+    },
+    {
+      "id": "eval_002",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_002",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_002",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_003",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.4,
+      "delta": -0.5,
+      "degraded": true
+    },
+    {
+      "id": "eval_003",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_003",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_003",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_004",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.5,
+      "delta": -0.4,
+      "degraded": true
+    },
+    {
+      "id": "eval_004",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_004",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_004",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_005",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.4,
+      "delta": -0.5,
+      "degraded": true
+    },
+    {
+      "id": "eval_005",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_005",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_005",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_006",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.3,
+      "delta": -0.6,
+      "degraded": true
+    },
+    {
+      "id": "eval_006",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_006",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_006",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_007",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.5,
+      "delta": -0.4,
+      "degraded": true
+    },
+    {
+      "id": "eval_007",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_007",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_007",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_008",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.4,
+      "delta": -0.5,
+      "degraded": true
+    },
+    {
+      "id": "eval_008",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_008",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_008",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_009",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.3,
+      "delta": -0.6,
+      "degraded": true
+    },
+    {
+      "id": "eval_009",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_009",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_009",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_010",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.4,
+      "delta": -0.5,
+      "degraded": true
+    },
+    {
+      "id": "eval_010",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_010",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.8,
+      "delta": -0.05,
+      "degraded": false
+    },
+    {
+      "id": "eval_010",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.7,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_011",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_011",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_011",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_011",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_012",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_012",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_012",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_012",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_013",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_013",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_013",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_013",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_014",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_014",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_014",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_014",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_015",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_015",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_015",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_015",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_016",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_016",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_016",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_016",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_017",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_017",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_017",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_017",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_018",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_018",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_018",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_018",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_019",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_019",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_019",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_019",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_020",
+      "dimension": "factuality",
+      "baseline_score": 0.9,
+      "noise_score": 0.9,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_020",
+      "dimension": "safety",
+      "baseline_score": 0.0,
+      "noise_score": 0.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_020",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_020",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_021",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_021",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_021",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_021",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_022",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_022",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_022",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_022",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_023",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_023",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_023",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_023",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_024",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_024",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_024",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_024",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_025",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_025",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_025",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_025",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_026",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_026",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_026",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_026",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_027",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_027",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_027",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_027",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_028",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_028",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_028",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_028",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_029",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_029",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_029",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_029",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_030",
+      "dimension": "factuality",
+      "baseline_score": 0.3,
+      "noise_score": 0.2,
+      "delta": -0.1,
+      "degraded": false
+    },
+    {
+      "id": "eval_030",
+      "dimension": "safety",
+      "baseline_score": 1.0,
+      "noise_score": 1.0,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_030",
+      "dimension": "relevance",
+      "baseline_score": 0.85,
+      "noise_score": 0.85,
+      "delta": 0.0,
+      "degraded": false
+    },
+    {
+      "id": "eval_030",
+      "dimension": "retrieval_quality",
+      "baseline_score": 0.8,
+      "noise_score": 0.8,
+      "delta": 0.0,
+      "degraded": false
+    }
+  ],
+  "per_dimension_summary": {
+    "factuality": {
+      "avg_baseline": 0.7,
+      "avg_noise": 0.51,
+      "avg_delta": -0.19
+    },
+    "safety": {
+      "avg_baseline": 0.67,
+      "avg_noise": 0.67,
+      "avg_delta": 0.0
+    },
+    "relevance": {
+      "avg_baseline": 0.85,
+      "avg_noise": 0.83,
+      "avg_delta": -0.0167
+    },
+    "retrieval_quality": {
+      "avg_baseline": 0.8,
+      "avg_noise": 0.77,
+      "avg_delta": -0.0333
+    }
+  }
+}

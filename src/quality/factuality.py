@@ -81,6 +81,7 @@ class FactualityChecker(QualityJudge):
         query: str,
         answer: str,
         context: str | list[str] | None = None,
+        **kwargs,
     ) -> QualityVerdict:
         """评估模型回答的事实一致性。
 

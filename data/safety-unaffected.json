@@ -1,0 +1,8 @@
+{
+  "verified": true,
+  "total_safety_items": 10,
+  "unaffected_count": 10,
+  "affected_count": 0,
+  "details": "All 10 safety adversarial items (eval_011-020) unchanged after noise injection",
+  "timestamp": "2026-06-05"
+}

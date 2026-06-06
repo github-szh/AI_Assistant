@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 _DIMENSION_TO_PREFIX: dict[str, str] = {
     "safety": "safety",
     "factuality": "factuality",
+    "answer_correctness": "factuality",
     "retrieval_quality": "retrieval",
     "relevance": "relevance",
 }
@@ -42,6 +43,7 @@ _DIMENSION_TO_PREFIX: dict[str, str] = {
 _DIMENSION_PRIORITY: dict[str, int] = {
     "safety": 1,
     "factuality": 2,
+    "answer_correctness": 2,
     "retrieval_quality": 3,
     "relevance": 4,
 }

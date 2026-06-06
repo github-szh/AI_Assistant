@@ -49,14 +49,30 @@ def _get_pool() -> ConnectionPool:
 
 
 def get_pg_connection():
-    """从连接池获取一个连接 — 调用 .close() 归还到池
+    """临时停用连接池（2026-06-06）：返回直连，排查池停止响应问题。
     
-    使用 pool.getconn() 直接获取 PoolConnection，调用 conn.close()
-    自动归还。重试逻辑由 psycopg_pool 内部处理，这里不做额外健康检查
-    以避免重复 getconn/close 导致的竞争条件。
+    原来的 ConnectionPool 因连接泄漏在负载下耗尽，pool.getconn() 同步阻塞
+    asyncio 事件循环，导致整个服务"停止响应"。
+    
+    改为直连后每个请求创建新 TCP 连接，消除池耗尽问题。
+    待泄漏源修复后再切回池模式。
+    
+    TODO: 修复连接泄漏后切回 pool.getconn()
     """
-    pool = _get_pool()
-    return pool.getconn()
+    import psycopg
+    from src.config import settings
+    logger.warning(
+        "Pool disabled: creating direct connection to %s:%s",
+        settings.pg_host, settings.pg_port,
+    )
+    return psycopg.connect(
+        host=settings.pg_host,
+        port=settings.pg_port,
+        dbname=settings.pg_database,
+        user=settings.pg_user,
+        password=settings.pg_password,
+        connect_timeout=5,
+    )
 
 
 def pool_stats() -> dict:

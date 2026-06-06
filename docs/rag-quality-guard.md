@@ -20,6 +20,7 @@ QualityGuard 是 RAG 质量保证系统的**编排层（Orchestrator）**，负�
 │     ├─ SafetyChecker.evaluate()             [LLM 评判]     │
 │     ├─ FactualityChecker.evaluate()         [LLM 评判]     │
 │     ├─ RelevanceChecker.evaluate()          [LLM 评判]     │
+│     ├─ AnswerCorrectnessChecker.evaluate() [LLM 评判]     │
 │     │                                                      │
 │     └─ InterventionEngine.run_all()         [干预执行]     │
 │                                                            │
@@ -41,6 +42,7 @@ src/
 │   ├── safety.py             ← SafetyChecker
 │   ├── factuality.py         ← FactualityChecker
 │   ├── relevance.py          ← RelevanceChecker
+│   ├── answer_correctness.py ← AnswerCorrectnessChecker
 │   ├── keyword_filter.py     ← KeywordFilter
 │   ├── config.py             ← 配置模型
 │   └── __init__.py           ← 导出
@@ -63,7 +65,7 @@ def __init__(
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `checkers` | `dict[str, QualityJudge]` | 质检器字典。键为维度名（"safety"/"factuality"/"relevance"），值为对应的 QualityJudge 子类实例 |
+| `checkers` | `dict[str, QualityJudge]` | 质检器字典。键为维度名（"safety"/"factuality"/"relevance"/"answer_correctness"），值为对应的 QualityJudge 子类实例 |
 | `intervention` | `InterventionEngine` | 干预引擎实例，负责执行干预动作 |
 | `config` | `Settings` | 全局配置对象，读取 `quality_*` 配置项 |
 
@@ -102,7 +104,7 @@ def run(
    - 调用 `RetrievalQualityChecker.evaluate()` 计算平均分、最高分、离散度等
    - 无分数数据时跳过
 
-2. **LLM 评判维度**（安全 / 事实性 / 相关性）
+2. **LLM 评判维度**（安全 / 事实性 / 相关性 / 正确性）
    - **并行模式**（`quality_parallel_eval=True`，默认）：使用 `ThreadPoolExecutor` 并发执行
    - **串行模式**（`quality_parallel_eval=False`）：逐个执行
    - 超时保护：总超时 = `quality_judge_timeout_s × checker数 + 5秒缓冲`
@@ -163,7 +165,7 @@ if self.quality_guard is not None and settings.quality_guard_enabled:
 | `quality_fail_open_for_others` | `bool` | `True` | 非安全维度是否 fail-open |
 | `quality_max_answer_chars_for_judge` | `int` | `4000` | 送入 Judge 的最大回答字符数 |
 | `quality_skip_on_timeout` | `bool` | `True` | 超时时是否跳过质检 |
-| `quality_eval_dimensions` | `list[str]` | `["safety","factuality","relevance","retrieval_quality"]` | 评估维度列表 |
+| `quality_eval_dimensions` | `list[str]` | `["safety","factuality","relevance","answer_correctness","retrieval_quality"]` | 评估维度列表 |
 
 ## 设计决策
 
@@ -193,6 +195,7 @@ Safety/Factuality/Relevance 三个 LLM 评判使用 `concurrent.futures.ThreadPo
 | 安全 | fail-closed | 阻断回答 |
 | 事实性 | fail-open | 放行 + 记录告警 |
 | 相关性 | fail-open | 放行 + 记录告警 |
+| 正确性 | fail-open | 放行 + 记录告警 |
 | 检索质量 | 不适用 | 纯数值，无异常 |
 | QualityGuard 编排 | fail-isolated | 单个 checker 异常不影响其他 |
 
@@ -215,12 +218,13 @@ if self.quality_guard is not None and settings.quality_guard_enabled:
 1. 创建新的 QualityJudge 子类（如 `MyCustomChecker`）
 2. 将其加入 `checkers` 字典：
    ```python
-   checkers = {
-       "safety": safety_checker,
-       "factuality": factuality_checker,
-       "relevance": relevance_checker,
-       "my_custom": my_custom_checker,
-   }
+    checkers = {
+        "safety": safety_checker,
+        "factuality": factuality_checker,
+        "relevance": relevance_checker,
+        "answer_correctness": answer_correctness_checker,
+        "my_custom": my_custom_checker,
+    }
    ```
 3. 在 `config.py` 中添加对应的 `InterventionRule`（如果需要干预动作）
 
@@ -237,4 +241,5 @@ if self.quality_guard is not None and settings.quality_guard_enabled:
 - SafetyChecker: `_is_refusal("")` 返回 False，走 LLM 评判
 - FactualityChecker: IDK 检测不命中，正常评估
 - RelevanceChecker: 正常评估
+- AnswerCorrectnessChecker: 正常评估
 - RetrievalQualityChecker: 不依赖 answer，仅看 scores

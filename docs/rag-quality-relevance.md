@@ -1,116 +1,143 @@
-# RAG 回答相关性评估（Relevance Evaluation）
+# RAG 回答相关性评估（Relevance Evaluation）— RAGAS 版
+
+> RAGAS 风格的相关性检查器，取代原有的 LLM 评判方案。
+> 基于语义相似度 + 问题术语覆盖率实现平滑评分。
+>
+> 实现位置：`src/quality/ragas_checker.py`（class RagasAnswerRelevancy）
+> 版本：v2.0（RAGAS）
+
+---
 
 ## 概述
 
-回答相关性评估用于判断模型生成的回答是否直接回应了用户的问题。它是 RAG 质量评估体系中最基础的维度——如果回答离题，即使事实正确也没有意义。
+RagasAnswerRelevancy 通过三个方面衡量回答与问题的相关程度：
 
-**核心原则：相关性评估只看"回答 vs 问题"，不看"回答 vs 上下文"。**
+| 维度 | 权重 | 说明 |
+|------|:----:|------|
+| 语义相似度 | 50% | 问题与回答的 embedding 余弦相似度 |
+| 术语覆盖率 | 30% | 问题中的关键术语是否在回答中出现 |
+| 回答长度因子 | 20% | 回答是否有足够的内容（过短的回答扣分） |
 
-## RelevanceChecker 设计
+最终得分 = 语义相似度 x 0.5 + 术语覆盖率 x 0.3 + 长度因子 x 0.2
 
-### 类层次
+### 与旧版的对比
 
+| 对比项 | 旧版 RelevanceChecker (v1.0) | 新版 RagasAnswerRelevancy (v2.0) |
+|--------|----------------------------|----------------------------------|
+| 评估方式 | LLM Judge 三维度审查 | embedding 语义相似度 + jieba 术语覆盖 |
+| 分数范围 | 0.0 ~ 1.0（连续，但来自 LLM） | 0.0 ~ 1.0（平滑，纯计算） |
+| 依赖服务 | 需要 LLM API | 无需额外调用（复用已有 embedding） |
+| 响应速度 | 慢（需 LLM 推理） | 快（纯向量计算 + 分词） |
+| Prompt 模板 | prompts/quality/relevance_judge.yaml | 无模板依赖 |
+
+---
+
+## 算法原理
+
+### 1. 语义相似度
+
+使用项目的 Embedding 模型计算问题与回答的余弦相似度：
+
+```text
+问题: "部署需要多少内存和磁盘？"
+回答: "最低配置4GB内存，20GB磁盘"
+→ 两者都在说"内存""磁盘"→ 相似度 ≈ 0.90
 ```
-QualityJudge (ABC)          ← src/quality/base.py
-  └── RelevanceChecker       ← src/quality/relevance.py
-  └── FactualityChecker      (后续实现)
-  └── SafetyChecker          (后续实现)
+
+### 2. 术语覆盖率
+
+用 jieba 对问题分词，过滤停用词后，统计有多少关键词出现在回答中：
+
+```text
+问题分词: ["部署", "需要", "多少", "内存", "磁盘"]
+去停用词: ["部署", "内存", "磁盘"]
+回答命中: "内存"✓ "磁盘"✓ "部署"✓
+覆盖率 = 3/3 = 100%
 ```
 
-### 评估维度
+### 3. 长度因子
 
-RelevanceChecker 委托 LLM Judge 依据 `prompts/quality/relevance_judge.yaml` 从三个维度审查：
+过短的回答（如"是"、"不知道"）给予惩罚：
 
-| 维度 | 说明 | 示例 |
-|------|------|------|
-| 是否直接回应问题 | 回答是否针对用户问题的核心意图 | 问"RAG 是什么"答"RAG 是一种检索增强生成技术"→ 通过 |
-| 是否有离题/无关内容 | 回答中是否有与问题无关的长篇论述 | 问"今天天气"答"相对论"→ 不通过 |
-| 是否有遗漏问题部分 | 多子问题是否都得到回答 | 问"优缺点"只答优点 → 部分通过 |
+```text
+回答长度 20+ 字符 → 满分 1.0
+回答长度 10 字符 → 长度因子 = 10/20 = 0.5
+```
 
-### 特殊处理
+### 示例计算
 
-| 场景 | 处理方式 | 原因 |
-|------|----------|------|
-| "我不知道"/"无法回答" | 视为 **relevant** | LLM 正确回应了问题（表示无法回答），比胡编乱造更好 |
-| LLM 调用异常（超时/网络错误） | **fail-open**：放行 + 日志警告 | 相关性是"质量提升"维度，不应阻断正常回答流程 |
+```text
+问题: 部署需要多少内存？
+回答: 4GB
 
-### 配置参数
+语义相似度 = 0.85
+术语覆盖率 = 100%（"部署""内存"都在回答中）
+长度因子   = 3/20 = 0.15
+
+最终分 = 0.85 x 0.5 + 1.0 x 0.3 + 0.15 x 0.2 = 0.755
+→ "高度相关"（>= 0.7）
+```
+
+---
+
+## 使用方式
+
+### 代码调用
 
 ```python
-RelevanceChecker(
-    llm_provider=my_llm,       # 实现了 chat() 接口的 LLM 实例
-    prompt_dir="prompts/quality",  # Prompt 模板目录
-    judge_model=None,          # 评估模型名（None=使用 llm_provider 默认）
-    threshold=0.7,             # 相关性阈值（低于此值日志告警）
-)
-```
+from src.quality.ragas_checker import RagasAnswerRelevancy
 
-### 返回值
-
-```python
-@dataclass
-class QualityVerdict:
-    passed: bool              # True=通过, False=不通过
-    score: float              # 0.0(完全不相关) ~ 1.0(完全相关)
-    reasoning: str            # LLM Judge 的评估理由
-    metadata: dict            # 额外数据（RelevanceChecker 通常为空）
-```
-
-## 使用示例
-
-```python
-from src.quality.relevance import RelevanceChecker
-
-# 初始化（使用真实 LLM Provider）
-checker = RelevanceChecker(llm_provider=my_llm)
-
-# 评估
+checker = RagasAnswerRelevancy(llm_provider=llm)
 verdict = checker.evaluate(
     query="什么是 RAG 技术？",
-    answer="RAG（Retrieval-Augmented Generation）是检索增强生成技术。",
+    answer="RAG 是检索增强生成技术。",
 )
-
-if verdict.passed:
-    print(f"相关，分数: {verdict.score:.2f}")
-    print(f"理由: {verdict.reasoning}")
-else:
-    print(f"不相关，分数: {verdict.score:.2f}")
-    print(f"理由: {verdict.reasoning}")
+print(f'分数: {verdict.score}')
+print(f'详情: {verdict.details}')
 ```
 
-## 测试覆盖
+### 集成到 QualityGuard
 
-| 测试用例 | 验证点 | 场景 |
-|----------|--------|------|
-| `test_relevant_answer` | passed=True, score>=0.7 | 正常相关回答 |
-| `test_off_topic_answer` | passed=False | 完全离题回答 |
-| `test_partially_relevant` | 0.3 < score < 0.7 | 部分覆盖问题 |
-| `test_idk_answer_relevant` | passed=True, score>=0.7 | "我不知道"正确拒答 |
-| `test_judge_failure_fallback` | passed=True, "自动放行" | LLM 调用超时 |
-| `test_empty_answer` | 不抛异常 | 空回答边界 |
-| `test_long_query_answer` | 不抛异常 | 长文本边界 |
-| `test_threshold_configuration` | 自定义阈值生效 | 配置验证 |
+在 `src/knowledge/query_engine.py` 中已配置：
 
-## Fail-Open 策略说明
-
-RelevanceChecker 采用 **fail-open**（失败时放行）策略：
-
-```
-LLM 调用成功 → 返回 LLM Judge 的评估结果
-LLM 调用失败 → 记录警告日志，返回默认通过结果（score=0.7）
+```python
+from src.quality.ragas_checker import RagasAnswerRelevancy
+checkers = {
+    ...
+    "relevance": RagasAnswerRelevancy(llm_provider=llm),
+}
 ```
 
-设计决策记录在 `.sisyphus/notepads/rag-quality-assurance/decisions.md`。
+---
 
-## 与其他评估器的关系
+## 分数解读
 
+| 分数范围 | 可读描述 | 说明 |
+|:-------:|---------|------|
+| >= 0.7 | 高度相关 | 回答直接回应了问题核心 |
+| 0.4 ~ 0.7 | 部分相关 | 回答涉及了问题但不够全面 |
+| < 0.4 | 相关性较低 | 回答偏离问题或内容不足 |
+
+---
+
+## 配置
+
+无需额外配置。RagasAnswerRelevancy 不依赖 LLM 调用和 Prompt 模板，
+只使用项目已有的 Embedding 模型和 jieba 分词。
+
+---
+
+## 测试
+
+```bash
+python -c "from src.quality.ragas_checker import RagasAnswerRelevancy; print('OK')"
 ```
-RelevanceChecker  →  回答是否回答了问题（不看上下文）
-FactualityChecker →  回答是否基于检索内容（依赖上下文）
-SafetyChecker     →  回答是否安全合规（关键维度，fail-closed）
-```
 
-RelevanceChecker 通常最先执行，因为：
-1. 如果回答离题，后续的事实性和安全性评估没有意义
-2. 它的评估成本最低（不需要加载和传递 context）
-3. 可以快速过滤明显不相关的回答，节省后续评估的 LLM 调用
+---
+
+## 变更记录
+
+| 日期 | 变更内容 |
+|------|----------|
+| 2026-06-02 | 初始版本。实现 RelevanceChecker（LLM 三维度审查） |
+| 2026-06-06 | v2.0 RAGAS 重构。替换为 RagasAnswerRelevancy（语义 + 术语覆盖） |

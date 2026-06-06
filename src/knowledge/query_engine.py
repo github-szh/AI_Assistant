@@ -315,6 +315,37 @@ class QueryEngine:
         return response
 
     # ------------------------------------------------------------------
+    # eval query (for quality evaluation endpoint)
+    # ------------------------------------------------------------------
+    def query_eval(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
+                   messages: list[dict] | None = None, tenant_id: int | None = None) -> dict:
+        """Like query() but also returns context for quality evaluation.
+
+        Returns:
+            dict with keys: answer, sources, context
+        """
+        cache = get_memory_cache()
+        key = self._cache_key(question, top_k, doc_ids, tenant_id)
+        cached = cache.get(key)
+        if cached is not None and "context" in cached:
+            logger.debug("RAG eval cache hit: '%s'", question[:60])
+            return cached
+
+        result = self._retrieve(question, top_k, doc_ids, messages, tenant_id)
+        if result is None:
+            return {"answer": "向量数据库未就绪", "sources": [], "context": ""}
+        if not result["nodes"]:
+            return {"answer": "知识库中没有找到相关信息。请先上传相关文档。", "sources": [], "context": ""}
+
+        prompt = self._build_prompt(question, result["context"])
+        llm = get_llm()
+        answer = llm.chat(messages=[{"role": "user", "content": prompt}], temperature=0.0, max_tokens=1024)
+
+        response = {"answer": answer, "sources": result["sources"], "context": result.get("context", "")}
+        cache.set(key, response, ttl=300)
+        return response
+
+    # ------------------------------------------------------------------
     # streaming query
     # ------------------------------------------------------------------
     def query_stream(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
@@ -452,15 +483,23 @@ def get_query_engine() -> QueryEngine:
     from src.quality.guard import QualityGuard
     from src.quality.intervention import InterventionEngine
     from src.quality.safety import SafetyChecker
-    from src.quality.factuality import FactualityChecker
-    from src.quality.relevance import RelevanceChecker
+    from src.quality.ragas_checker import RagasFaithfulness, RagasFactualCorrectness, RagasAnswerRelevancy
 
     try:
         llm = get_llm()
+
+        # RAGAS 风格事实性检查器（平滑评分 0~1，非二元）
+        ragas_faithfulness = RagasFaithfulness(llm_provider=llm)
+        ragas_correctness = RagasFactualCorrectness(llm_provider=llm, weight=0.5)
+        logger.info("事实性检查模式: RAGAS-style（平滑评分，F1 + 语义相似度融合）")
+
         checkers = {
             "safety": SafetyChecker(llm_provider=llm),
-            "factuality": FactualityChecker(llm_provider=llm),
-            "relevance": RelevanceChecker(llm_provider=llm),
+            # 替换旧的 FactualityChecker 为 RAGAS 忠实度检查
+            "factuality": ragas_faithfulness,
+            # 新增 RAGAS 答案正确性检查（需要 ground_truth 时生效）
+            "answer_correctness": ragas_correctness,
+            "relevance": RagasAnswerRelevancy(llm_provider=llm),
         }
         intervention = InterventionEngine()
         quality_guard = QualityGuard(checkers, intervention, settings)

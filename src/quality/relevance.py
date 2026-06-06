@@ -8,6 +8,7 @@ RelevanceChecker 是三个评判中最简单的：只比较 query 和 answer，�
 2. "我不知道"/"无法回答" — 视为 relevant（LLM 正确回应了问题，表示无法回答）
 3. Fail-open — 调用失败时放行 + 记录警告，不阻断流程
 4. 使用低温度（temperature=0.0）保证评估一致性
+5. sources 过滤 — 接收来源文档信息用于日志追踪（评估本身不依赖 context）
 
 使用示例：
     checker = RelevanceChecker(llm_provider=my_llm)

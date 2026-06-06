@@ -1,220 +1,234 @@
-# 事实一致性检查（Factuality Checker）
+# 事实一致性检查（Factuality Checker）— RAGAS 版
 
-> 检测 LLM 回答是否基于检索上下文，防止模型编造（幻觉）。
+> 检测 LLM 回答是否基于检索上下文，并与标准答案对比验证正确性。
+> 采用 RAGAS 方法论实现平滑评分（0.0~1.0），取代原有的二元 LLM 评判。
 >
-> 实现位置：`src/quality/factuality.py`
-> 版本：v1.0
+> 实现位置：`src/quality/ragas_checker.py`
+> 版本：v2.0（RAGAS）
 
 ---
 
 ## 概述
 
-**FactualityChecker** 是 RAG 质检体系中的事实一致性评估器。它判断模型回答中的事实主张是否与检索到的参考资料一致，检测是否存在编造数据、虚假引用、事实矛盾等问题。
+RAGAS 风格的事实性检查包含**两个维度**：
 
-### 核心原则
+| 维度 | 类名 | 原方案 | 作用 |
+|------|------|--------|------|
+| **事实性 (factuality)** | `RagasFaithfulness` | FactualityChecker | 回答是否忠于检索到的上下文 |
+| **答案正确性 (answer_correctness)** | `RagasFactualCorrectness` | ❌ 不存在（新增） | 回答是否与标准答案一致 |
 
-1. **交叉评判**：评估模型（`quality_judge_model`）与生成模型不同，避免自我增强偏差
-2. **fail-open 策略**：非安全维度异常时放行，保证用户体验不受影响
-3. **诚实保护**：模型说"不知道"不判为幻觉
+### 核心变化
+
+| 对比项 | 旧版 (v1.0) | 新版 (v2.0 RAGAS) |
+|--------|------------|-------------------|
+| 评分方式 | LLM 二元判定（0 或 100） | 声明分解 + F1 + 语义相似度 → **平滑 0~1** |
+| 需要参数 | answer + context | answer + context（事实性）/ + ground_truth（答案正确性） |
+| 输出 | passed=True/False | 平滑分数（0.0~1.0）+ 通过/不通过 |
+| 可读性 | LLM 返回的 JSON | 中文可读描述 \|\| 技术数据 |
 
 ---
 
-## 执行流程
+## 算法原理
 
+### 核心公式
+
+```text
+最终得分 = F1 × 权重(0.5) + 语义相似度 × (1-权重)
 ```
+
+### 三步计算
+
+#### 1. 声明分解（Claim Decomposition）
+
+将回答和标准答案拆解为原子事实声明：
+
+```text
+输入文本："系统使用PostgreSQL 15，Redis 6用于缓存"
+分解结果：
+  claim 1: "数据库使用PostgreSQL 15"
+  claim 2: "Redis 6用于缓存"
+```
+
+**实现**：优先用 LLM 分解（DeepSeek），失败时回退到中文句子分割。
+**源码**：`_decompose_claims()` — ragas_checker.py:24-57
+
+#### 2. F1 分数计算
+
+对比两个声明集合：
+
+```text
+回答声明: ["内存4GB", "磁盘20GB"]
+标准声明: ["内存8GB", "磁盘50GB"]
+
+TP(都有)=0, FP(回答有标准无)=2, FN(标准有回答无)=2
+F1 = 2 × 0 / (2 × 0 + 2 + 2) = 0.0
+```
+
+**关键词匹配**：jieba 分词，30% 以上有意义分词重叠即视为匹配。
+**源码**：`_check_support()` + `_calculate_f1()` — ragas_checker.py:60-108
+
+#### 3. 语义相似度
+
+```text
+回答: "内存4GB"
+标准: "内存8GB"
+→ 余弦相似度 ≈ 0.85（语义接近，仅数值不同）
+```
+
+**源码**：`_semantic_similarity()` — ragas_checker.py:111-125
+
+### 数值一致性检查
+
+解决"top_k=30 vs top_k=20"这类语义相似但数值不同的问题：
+
+```text
+回答提取数字: [30]
+标准提取数字: [20, 5]
+30 vs 20 → 不匹配
+数值一致性 = 0/2 = 0.0
+调整后 F1 = 原F1 × 0.0 = 0.0
+```
+
+**源码**：`_check_numeric_consistency()` — ragas_checker.py:133-157
+
+---
+
+## RagasFaithfulness（事实性）
+
+### 作用
+
+检查回答中的每一个事实声明是否都能在检索到的上下文中找到支持。
+替代了原有的 `FactualityChecker`（LLM 交叉评判）。
+
+### 执行流程
+
+```text
 evaluate(query, answer, context)
     │
-    ├─ Step 1: 检测"不知道"类回答 ───────────────────→ passed=True, score=1.0
+    ├─ Step 1: 空回答 → 跳过，score=1.0
     │
-    ├─ Step 2: 检测空上下文 ────────────────────────→ passed=True, score=0.0
+    ├─ Step 2: 无上下文 → 无法验证，score=0.5
     │
-    ├─ Step 3: 加载 Prompt 模板 (factuality_judge.yaml)
+    ├─ Step 3: 声明分解回答 (claim decomposition)
     │
-    ├─ Step 4: 渲染模板 → 注入 question/context/answer
+    ├─ Step 4: 无声明 → 回退到语义相似度
     │
-    ├─ Step 5: 调用 Judge LLM（交叉评判）
+    ├─ Step 5: 逐一检查每个 claim 是否在 context 中出现
     │
-    ├─ Step 6: 解析 JSON 响应
+    ├─ Step 6: score = 被支持的 claims / 总 claims
     │
-    ├─ Step 7: 返回 QualityVerdict
-    │
-    └─ 异常 → fail-open → passed=True, score=0.0
+    └─ 异常 → 回退到语义相似度
 ```
 
-### 流程图
+### 分数示例
 
-```mermaid
-flowchart TD
-    A[收到评估请求] --> B{回答是"不知道"?}
-    B -->|是| C[passed=True, score=1.0<br/>模型诚实，不判为幻觉]
-    B -->|否| D{上下文为空?}
-    D -->|是| E[passed=True, score=0.0<br/>无法验证，但不是模型编造]
-    D -->|否| F[加载 factuality_judge.yaml Prompt]
-    F --> G[渲染模板<br/>注入 question/context/answer]
-    G --> H[调用 Judge LLM<br/>交叉评判]
-    H --> I{解析成功?}
-    I -->|是| J[返回 QualityVerdict]
-    I -->|否| K[日志警告 + fail-open]
-    K --> L[passed=True, score=0.0]
+| 场景 | 回答 | 上下文 | 分数 |
+|------|------|--------|------|
+| 忠实引用 | "内存4GB" | 文档写"内存4GB" | 0.85 |
+| 部分编造 | "内存8GB" | 文档写"内存4GB" | 0.33 |
+| 完全编造 | "使用MongoDB" | 文档只提PostgreSQL | 0.0 |
+
+### 源码
+
+```python
+class RagasFaithfulness(QualityJudge):
+    """RAGAS 风格的忠实度检查器。"""
+    # ragas_checker.py:240-297
 ```
 
 ---
 
-## 评估维度
+## RagasFactualCorrectness（答案正确性）— 新增
 
-| 维度 | 说明 | 检查方式 |
-|------|------|----------|
-| 事实主张支持度 | 回答中的每个 claims 是否有参考资料支撑 | LLM Judge 逐项审查 |
-| 编造内容检测 | 是否有参考资料中不存在的数据、引用、事件、数字 | LLM Judge 对比分析 |
-| 引用准确性 | 回答中标注的 `[来源:N]` 是否引用了正确的资料 | LLM Judge 交叉验证 |
+### 作用
 
----
+将回答与标准答案（ground_truth）对比，验证回答在事实上是否正确。
+这是整个系统中**唯一能检测"引用噪声文档导致答案错误"的维度**。
 
-## 特殊处理规则
+### 执行流程
 
-### 1. "我不知道"类回答
+```text
+evaluate(query, answer, context, ground_truth)
+    │
+    ├─ Step 1: 空回答 → 跳过
+    │
+    ├─ Step 2: 无 ground_truth → 跳过，score=0.5
+    │          （生产环境随意提问时走此分支）
+    │
+    ├─ Step 3: 有 ground_truth → 执行 RAGAS 算法
+    │
+    ├─ Step 4: 声明分解回答和标准答案
+    │
+    ├─ Step 5: F1 = 计算声明重叠
+    │
+    ├─ Step 6: 语义相似度 = embedding 余弦
+    │
+    ├─ Step 7: 数值一致性检查
+    │
+    ├─ Step 8: adjusted_F1 = F1 × 数值一致性
+    │
+    ├─ Step 9: 最终分 = adjusted_F1 × 0.5 + 相似度 × 0.5
+    │
+    └─ 异常 → 回退到纯语义相似度
+```
 
-如果模型回答中包含了以下表述，FactualityChecker **不会**调用 LLM Judge，直接通过：
+### 什么时候生效
 
-- `我不知道`
-- `没有找到相关信息`
-- `知识库中没有`
-- `抱歉，我无法回答`
-- `无法提供该信息`
-- 等等（完整列表见 `_IDK_PATTERNS`）
+| 场景 | ground_truth | 行为 | 显示 |
+|------|-------------|------|------|
+| 前端随意提问 | 无 | 跳过，score=0.5 | "跳过正确性校验" |
+| 测评数据集 | 有（从eval_dataset传入） | 正常计算 | "一致/不一致" |
+| 前端填了标准答案框 | 有（用户手动输入） | 正常计算 | "一致/不一致" |
 
-**设计理由**：模型诚实地反映了知识库的缺失，这是正确的行为，不应被误判为幻觉。
+### 源码
 
-### 2. 空上下文
-
-当检索未返回任何结果时（context 为空列表或 None）：
-
-- `passed=True`：不是模型编造的错
-- `score=0.0`：无法验证事实性
-- `details="无检索上下文可验证"`
-
-### 3. 异常处理（fail-open）
-
-当 Judge LLM 调用异常（超时、JSON 解析失败、网络错误）：
-
-- 记录警告日志
-- `passed=True`（放行）
-- `score=0.0`
-- `details` 中包含异常信息
+```python
+class RagasFactualCorrectness(QualityJudge):
+    """RAGAS 风格的答案正确性检查器。"""
+    # ragas_checker.py:164-233
+```
 
 ---
 
 ## 配置参数
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `quality_judge_model` | str | `"deepseek/deepseek-v4-flash"` | 评判模型名称（与生成模型不同） |
-| `quality_judge_provider` | str | `""` | 评判模型提供商（空=跟随 llm_provider） |
-| `quality_judge_timeout_s` | int | `10` | 每次 Judge 调用的超时秒数 |
-| `quality_fail_open_for_others` | bool | `True` | 非安全维度 fail-open 策略 |
-| `quality_skip_on_timeout` | bool | `True` | 超时时跳过质检 |
+在 `src/knowledge/query_engine.py` 中初始化：
 
----
+```python
+from src.quality.ragas_checker import RagasFaithfulness, RagasFactualCorrectness
 
-## Prompt 模板
+ragas_faithfulness = RagasFaithfulness(llm_provider=llm)
+ragas_correctness = RagasFactualCorrectness(llm_provider=llm, weight=0.5)
 
-评估使用 `prompts/quality/factuality_judge.yaml` 模板，包含以下变量：
-
-- `{{ question }}`：用户问题
-- `{{ context }}`：检索到的参考资料（多文档用 `---` 分隔）
-- `{{ answer }}`：模型回答
-
-模板要求 LLM 返回 JSON 格式：
-
-```json
-{
-  "passed": true,
-  "score": 0.95,
-  "hallucinations": [],
-  "reasoning": "回答中的事实主张均被参考资料支持，未发现编造内容。"
+checkers = {
+    "safety": SafetyChecker(llm_provider=llm),
+    "factuality": ragas_faithfulness,                    # 替换旧版
+    "answer_correctness": ragas_correctness,             # 新增
+    "relevance": RagasAnswerRelevancy(llm_provider=llm), # 替换旧版
 }
 ```
 
-返回字段说明：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `passed` | boolean | true=事实一致，false=存在幻觉 |
-| `score` | float | 0.0（完全幻觉）~ 1.0（完全准确） |
-| `hallucinations` | array | 每个元素包含 `claim`、`supported`、`source_evidence` |
-| `reasoning` | string | 审查评价理由 |
-
 ---
 
-## 使用示例
+## 与旧版的对比
 
-### 基本使用
-
-```python
-from src.quality.factuality import FactualityChecker
-
-# 初始化（llm_provider 应与生成模型不同）
-checker = FactualityChecker(llm_provider=judge_llm)
-
-# 执行评估
-verdict = checker.evaluate(
-    query="RAG 是什么？",
-    answer="RAG 是检索增强生成技术...",
-    context=[
-        "RAG（Retrieval-Augmented Generation）是一种结合检索和生成的技术。",
-        "它通过检索相关文档来增强 LLM 的生成能力。",
-    ],
-)
-
-print(f"passed: {verdict.passed}")   # True
-print(f"score: {verdict.score}")     # 0.95
-print(f"reasoning: {verdict.reasoning}")
-```
-
-### 结果判断
-
-```python
-verdict = checker.evaluate(query, answer, context=contexts)
-
-if not verdict.passed:
-    print(f"⚠️ 检测到幻觉，得分: {verdict.score}")
-    print(f"详情: {verdict.reasoning}")
-    # metadata 中可能包含 hallucinations 列表
-    for h in verdict.metadata.get("hallucinations", []):
-        print(f"  - 编造内容: {h['claim']}")
-```
+| 对比项 | 旧版 FactualityChecker (v1.0) | 新版 RagasFaithfulness (v2.0) |
+|--------|------------------------------|-------------------------------|
+| 评估方式 | LLM Judge 交叉评判 | 声明分解 + F1 + 语义相似度 |
+| 分数范围 | 0.0 或 1.0（二元） | 0.0 ~ 1.0（平滑） |
+| 需要配置 | quality_judge_model | 无需额外配置（复用已有 embedding） |
+| 依赖 | prompts/quality/factuality_judge.yaml | 无模板依赖 |
+| 可读性 | LLM 返回的 JSON | 中文描述 \|\| 技术数据 |
+| 异常处理 | fail-open → score=0.0 | 回退到语义相似度 |
 
 ---
 
 ## 测试
 
 ```bash
-# 运行所有事实性检查测试
-pytest tests/test_quality/test_factuality_checker.py -v
-
-# 运行单个测试
-pytest tests/test_quality/test_factuality_checker.py::TestFactualityChecker::test_hallucination_detected -v
+# 导入验证
+python -c "from src.quality.ragas_checker import RagasFaithfulness, RagasFactualCorrectness; print('OK')"
 ```
-
-### 测试覆盖
-
-| 测试用例 | 场景 | 预期 |
-|----------|------|------|
-| `test_answer_grounded_in_context` | 有上下文支撑 | passed=True |
-| `test_hallucination_detected` | 编造内容 | passed=False |
-| `test_idk_answer_passes` | "我不知道"回答 | 自动 passed |
-| `test_empty_context_handling` | 空上下文 | passed=True, score=0 |
-| `test_empty_context_with_none` | 不传 context | passed=True, score=0 |
-| `test_judge_failure_fallback` | LLM 异常 | fail-open 放行 |
-
----
-
-## 注意事项
-
-1. **不执行安全检查**：事实性检查只关注"回答 vs 上下文"的一致性，不检测内容安全（这是 SafetyChecker 的职责）
-2. **不调用 keyword_filter**：关键词过滤属于安全检查，不在 FactualityChecker 中实现
-3. **上下文来源**：context 应来自 SourceInfo 中的 snippet 原始内容，是检索到的原文片段
-4. **IDK 检测是启发式的**：基于关键词子串匹配，可能有误匹配，但不会漏掉明确的"不知道"表达
 
 ---
 
@@ -222,4 +236,5 @@ pytest tests/test_quality/test_factuality_checker.py::TestFactualityChecker::tes
 
 | 日期 | 变更内容 |
 |------|----------|
-| 2026-06-02 | 初始版本。实现 FactualityChecker，继承 QualityJudge 基类 |
+| 2026-06-02 | 初始版本。实现 FactualityChecker（LLM 交叉评判） |
+| 2026-06-06 | **v2.0 RAGAS 重构**。替换为 RagasFaithfulness，新增 RagasFactualCorrectness 维度 |

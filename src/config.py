@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     # Judge 超时时是否跳过质检而非阻塞整个流程
     quality_skip_on_timeout: bool = True
 
+    # 事实性检查提供者（llm=LLM交叉验证, vector=向量匹配零token）
+    factuality_provider: str = "llm"
+
     # Chunking
     chunk_strategy: str = "sentence"  # fixed_size / sentence / markdown_header / recursive
     chunk_size: int = 1024
