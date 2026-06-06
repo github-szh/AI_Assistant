@@ -133,7 +133,7 @@ def _rrf_fusion(
 # ---------------------------------------------------------------------------
 # Sentence Window — expand child chunks to parent contexts
 # ---------------------------------------------------------------------------
-def _expand_to_parents(child_nodes: list) -> list:
+def _expand_to_parents(child_nodes: list, tenant_id: int | None = None) -> list:
     """Expand child chunks to their parent context windows.
 
     Looks up parent_id in chunk_contexts table. Deduplicates — multiple
@@ -158,7 +158,7 @@ def _expand_to_parents(child_nodes: list) -> list:
         return child_nodes  # normal mode — no expansion needed
     # Batch fetch parent contexts
     from src.knowledge.index_store import _fetch_parent_contexts
-    parents = _fetch_parent_contexts(parent_ids)
+    parents = _fetch_parent_contexts(parent_ids, tenant_id=tenant_id)
 
     if not parents:
         return child_nodes
@@ -310,7 +310,7 @@ class HybridRetriever:
         fused_nodes = self._coarse_retrieve(query, doc_ids=doc_ids, tenant_id=tenant_id)
         if not fused_nodes:
             return []
-        expanded = _expand_to_parents(fused_nodes)
+        expanded = _expand_to_parents(fused_nodes, tenant_id=tenant_id)
         return expanded[:self.fine_k]
 
     def retrieve_with_rerank(self, query: str, doc_ids: list[str] | None = None,
@@ -320,7 +320,7 @@ class HybridRetriever:
         if not fused_nodes:
             return []
 
-        expanded = _expand_to_parents(fused_nodes)
+        expanded = _expand_to_parents(fused_nodes, tenant_id=tenant_id)
 
         _rag_start = time.monotonic()
         if settings.rerank_enabled:
