@@ -12,6 +12,7 @@ from src.llm.providers.openai import OpenAIProvider
 from src.llm.providers.zhipu import ZhipuProvider
 from src.llm.providers.ali import AliProvider
 from src.llm.providers.mock import MockProvider
+from src.monitoring.metrics import record_llm_call
 
 logger = logging.getLogger(__name__)
 
@@ -109,13 +110,22 @@ class LLMRouter:
                         stream=stream,
                     )
                     elapsed = time.monotonic() - t_start
+                    resolved_model = model or getattr(prov, "default_model", "unknown")
                     logger.info(
                         "LLM: provider=%s model=%s 耗时=%.2fs tokens=%s",
                         prov_name,
-                        model or "default",
+                        resolved_model,
                         elapsed,
                         _usage_str(result.usage),
                     )
+                    if result.usage:
+                        record_llm_call(
+                            provider=prov_name,
+                            model=resolved_model,
+                            prompt_tokens=result.usage.get("prompt_tokens", 0),
+                            completion_tokens=result.usage.get("completion_tokens", 0),
+                            elapsed=elapsed,
+                        )
                     return result.text
                 except Exception as exc:
                     last_error = exc
@@ -177,13 +187,22 @@ class LLMRouter:
                         stream_usage = chunk.usage
 
                 elapsed = time.monotonic() - t_start
+                resolved_model = model or getattr(prov, "default_model", "unknown")
                 logger.info(
                     "LLM stream: provider=%s model=%s 耗时=%.2fs tokens=%s",
                     prov_name,
-                    model or "default",
+                    resolved_model,
                     elapsed,
                     _usage_str(stream_usage),
                 )
+                if stream_usage:
+                    record_llm_call(
+                        provider=prov_name,
+                        model=resolved_model,
+                        prompt_tokens=stream_usage.get("prompt_tokens", 0),
+                        completion_tokens=stream_usage.get("completion_tokens", 0),
+                        elapsed=elapsed,
+                    )
                 return  # stream completed successfully
             except Exception as exc:
                 last_error = exc

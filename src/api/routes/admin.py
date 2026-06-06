@@ -26,7 +26,7 @@ class TenantUpdateRequest(BaseModel):
 
 class UserRoleUpdateRequest(BaseModel):
     user_id: int
-    role: str  # viewer / editor / tenant_admin
+    role: str  # viewer / editor / tenant_admin / super_admin（仅 super_admin 可赋予）
 
 
 class UserInfo(BaseModel):
@@ -155,19 +155,28 @@ async def list_users(user: dict = Depends(require_permission("tenant:users:manag
 @router.patch("/users/{target_user_id}/role")
 async def update_user_role(target_user_id: int, req: UserRoleUpdateRequest, user: dict = Depends(require_permission("tenant:users:manage"))):
     """权限与多租户：修改用户角色"""
-    if req.role not in ("viewer", "editor", "tenant_admin"):
-        raise HTTPException(400, "无效角色，可选: viewer / editor / tenant_admin")
+    valid_roles = ("viewer", "editor", "tenant_admin", "super_admin")
+    if req.role not in valid_roles:
+        raise HTTPException(400, "无效角色，可选: viewer / editor / tenant_admin / super_admin")
 
-    tenant_id = user.get("tenant_id")
+    # 只有 super_admin 才能赋予 super_admin 角色
+    if req.role == "super_admin" and user.get("role") != "super_admin":
+        raise HTTPException(403, "无权赋予超级管理员角色")
+
     conn = get_pg_connection()
     try:
-        # 确认用户属于同一租户
+        # 查询目标用户（不限租户）
         target = conn.execute(
-            "SELECT id FROM t_user WHERE id = %s AND tenant_id = %s",
-            [target_user_id, tenant_id],
+            "SELECT id, tenant_id FROM t_user WHERE id = %s",
+            [target_user_id],
         ).fetchone()
         if not target:
-            raise HTTPException(404, "用户不存在或不属于当前租户")
+            raise HTTPException(404, "用户不存在")
+
+        # super_admin 可跨租户操作；其他角色只能操作本租户
+        if user.get("role") != "super_admin":
+            if target[1] != user.get("tenant_id"):
+                raise HTTPException(403, "无权操作其他租户的用户")
 
         conn.execute(
             "UPDATE t_user SET role = %s WHERE id = %s",
@@ -182,17 +191,20 @@ async def update_user_role(target_user_id: int, req: UserRoleUpdateRequest, user
 @router.patch("/users/{target_user_id}/toggle-active")
 async def toggle_user_active(target_user_id: int, user: dict = Depends(require_permission("tenant:users:manage"))):
     """权限与多租户：启用/禁用用户"""
-    tenant_id = user.get("tenant_id")
     conn = get_pg_connection()
     try:
         target = conn.execute(
-            "SELECT id, is_active FROM t_user WHERE id = %s AND tenant_id = %s",
-            [target_user_id, tenant_id],
+            "SELECT id, tenant_id, is_active FROM t_user WHERE id = %s",
+            [target_user_id],
         ).fetchone()
         if not target:
-            raise HTTPException(404, "用户不存在或不属于当前租户")
+            raise HTTPException(404, "用户不存在")
 
-        new_status = not target[1]
+        # super_admin 可跨租户操作；其他角色只能操作本租户
+        if user.get("role") != "super_admin" and target[1] != user.get("tenant_id"):
+            raise HTTPException(403, "无权操作其他租户的用户")
+
+        new_status = not target[2]
         conn.execute(
             "UPDATE t_user SET is_active = %s WHERE id = %s",
             [new_status, target_user_id],

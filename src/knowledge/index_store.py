@@ -181,7 +181,7 @@ def _insert_parent_contexts(rows: list[dict]) -> None:
         logger.warning("Failed to insert parent contexts: %s", exc)
 
 """Batch-fetch parent chunks by ID. Returns {parent_id: {content, doc_id, ...}}."""
-def _fetch_parent_contexts(parent_ids: list[str]) -> dict[str, dict]:
+def _fetch_parent_contexts(parent_ids: list[str], tenant_id: int | None = None) -> dict[str, dict]:
     if not parent_ids:
         return {}
     try:
@@ -191,10 +191,16 @@ def _fetch_parent_contexts(parent_ids: list[str]) -> dict[str, dict]:
             dbname=settings.pg_database, user=settings.pg_user,
             password=settings.pg_password, connect_timeout=5,
         )
-        rows = conn.execute(
-            "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s)",
-            [parent_ids],
-        ).fetchall()
+        if tenant_id is not None:
+            rows = conn.execute(
+                "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s) AND tenant_id = %s",
+                [parent_ids, tenant_id],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s)",
+                [parent_ids],
+            ).fetchall()
         conn.close()
         return {
             r[0]: {"doc_id": r[1], "content": r[2], "filename": r[3], "chunk_index": r[4]}

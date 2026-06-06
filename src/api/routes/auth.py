@@ -130,25 +130,36 @@ async def register(req: RegisterRequest):
 @router.post("/login", response_model=AuthResponse)
 async def login(req: LoginRequest):
     conn = _get_pg()
-    # 权限与多租户：登录时同时查询 role 和 tenant_id
-    row = conn.execute(
-        """SELECT u.id, u.username, u.password_hash, u.display_name, u.role, u.tenant_id, t.name
+    # 先查出用户（含非活跃），区分错误原因
+    user_row = conn.execute(
+        """SELECT u.id, u.username, u.password_hash, u.display_name,
+                  u.role, u.tenant_id, u.is_active, t.name, t.is_active AS tenant_active
            FROM t_user u
            LEFT JOIN t_tenant t ON u.tenant_id = t.id
-           WHERE u.username = %s AND u.is_active = TRUE
-             AND (u.tenant_id IS NULL OR t.is_active = TRUE)""",
+           WHERE u.username = %s""",
         [req.username],
     ).fetchone()
     conn.close()
 
-    if not row or not bcrypt.checkpw(req.password.encode(), row[2].encode()):
+    if not user_row:
         raise HTTPException(401, "用户名或密码错误")
 
-    token = create_jwt(row[0], row[1], row[4], row[5])
+    _, username, pw_hash, display_name, role, tenant_id, is_active, tenant_name, tenant_active = user_row
+
+    if not is_active:
+        raise HTTPException(401, "账号已被禁用，请联系管理员")
+
+    if not bcrypt.checkpw(req.password.encode(), pw_hash.encode()):
+        raise HTTPException(401, "用户名或密码错误")
+
+    if tenant_id is not None and not tenant_active:
+        raise HTTPException(401, "所属租户已被禁用，请联系管理员")
+
+    token = create_jwt(user_row[0], username, role, tenant_id)
     return AuthResponse(
-        token=token, user_id=row[0], username=row[1],
-        display_name=row[3] or row[1],
-        role=row[4] or "viewer", tenant_id=row[5], tenant_name=row[6] or "",
+        token=token, user_id=user_row[0], username=username,
+        display_name=display_name or username,
+        role=role or "viewer", tenant_id=tenant_id, tenant_name=tenant_name or "",
     )
 
 

@@ -122,6 +122,9 @@ class Settings(BaseSettings):
     # JWT
     jwt_secret: str = "change-me-in-production-must-be-32-chars!"
 
+    # Arize Phoenix (LLM trace 可视化, 可选)
+    phoenix_enabled: bool = False
+
     # App
     app_host: str = "0.0.0.0"
     app_port: int = 8000

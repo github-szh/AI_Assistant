@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 
 from src.api.routes.auth import get_current_user
+from src.api.permissions import require_permission
 from src.config import settings
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -23,7 +24,7 @@ def _pg():
 
 
 @router.post("")
-async def create_session(user: dict = Depends(get_current_user)):
+async def create_session(user: dict = Depends(require_permission("chat:send"))):
     # 权限与多租户：创建会话时写入 tenant_id
     tenant_id = user.get("tenant_id")
     sid = uuid.uuid4().hex[:16]
@@ -38,7 +39,7 @@ async def create_session(user: dict = Depends(get_current_user)):
 
 
 @router.get("")
-async def list_sessions(user: dict = Depends(get_current_user)):
+async def list_sessions(user: dict = Depends(require_permission("chat:view"))):
     # 权限与多租户：按租户和用户过滤会话
     tenant_id = user.get("tenant_id")
     conn = _pg()
@@ -64,7 +65,7 @@ async def get_session(
     sid: str,
     limit: int = settings.chat_page_size,
     before_id: int | None = None,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_permission("chat:view")),
 ):
     # 权限与多租户：校验会话归属
     tenant_id = user.get("tenant_id")
@@ -114,7 +115,7 @@ async def get_session(
 
 
 @router.patch("/{sid}")
-async def rename_session(sid: str, title: str, user: dict = Depends(get_current_user)):
+async def rename_session(sid: str, title: str, user: dict = Depends(require_permission("chat:send"))):
     # 权限与多租户：校验租户
     tenant_id = user.get("tenant_id")
     conn = _pg()
@@ -131,7 +132,7 @@ async def rename_session(sid: str, title: str, user: dict = Depends(get_current_
 
 
 @router.delete("/{sid}")
-async def delete_session(sid: str, user: dict = Depends(get_current_user)):
+async def delete_session(sid: str, user: dict = Depends(require_permission("chat:send"))):
     # 权限与多租户：校验租户
     tenant_id = user.get("tenant_id")
     conn = _pg()
