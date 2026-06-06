@@ -1,0 +1,13 @@
+﻿AI Assistant 环境搭建笔记（草稿）
+
+Python：3.10吧，3.11好像也行。TODO：确认版本。
+
+内存：文档写16GB，但群里说8GB就够了。不确定。
+
+磁盘：20GB？测试环境用了50GB。TODO：看需求。
+
+数据库：应该是PG 15？TODO：查一下pgvector兼容性。
+
+上传API好像用的GET /api/upload，但文档说POST，搞不清了。
+
+TODO：下周一找后端确认。

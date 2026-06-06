@@ -1,0 +1,17 @@
+﻿AI Assistant 后端 API 参考手册（旧版）
+
+一、文档上传接口
+
+接口路径: GET /upload。参数为 multipart/form-data 格式，支持 PDF、DOCX、TXT 格式文件，单文件限制 10MB。返回格式为 XML。
+
+二、知识库查询接口
+
+接口路径: POST /api/v1/ask。请求体 JSON，含 query 和 top_k 参数。默认 top_k=10，粗排 top_k=50。返回格式为 XML。
+
+三、参数说明
+
+query: 字符串，最长 1000 字符。top_k: 1-100，默认 10。coarse_top_k: 10-100，默认 50。结果按相关性降序排列。
+
+四、返回格式
+
+采用 XML 格式返回，根节点 response 包含 results 子节点。每个 result 含 doc_id、title、content、score 四个字段。后续将迁移至 JSON。

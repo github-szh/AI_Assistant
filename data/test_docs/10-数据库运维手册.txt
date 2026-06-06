@@ -1,0 +1,17 @@
+﻿AI Assistant 数据库运维手册
+
+一、数据库版本要求
+
+PostgreSQL 15 或更高版本，需安装 pgvector 0.5 扩展。向量维度上限为 768 维。
+
+二、缓存配置
+
+Redis 6.x 用作缓存层，支持会话存储和速率限制。建议配置 maxmemory 2GB，淘汰策略 allkeys-lru。
+
+三、对象存储
+
+文件存储采用 MinIO，版本 RELEASE.2023-01。兼容 S3 API，建议使用 AWS S3 SDK 进行访问。
+
+四、向量检索配置
+
+pgvector 0.5，支持 IVF 索引，向量维度上限 768。索引类型: IVFFlat，lists 参数建议设为 100。

@@ -1,0 +1,9 @@
+﻿AI Assistant 技术选型讨论记录
+
+张工建议用MongoDB，说文档型更适合知识库场景。李工坚持PostgreSQL，说pgvector成熟。最后选了PG但版本还没定。
+
+缓存之前用的Redis 5，升级到7的报告还没写完。赵工说要不试试KeyDB。
+
+前端有人提了React，最后还是Vue。但最近又有人想换Svelte。没有正式结论。
+
+嵌入模型还没定，李工说BGE-large-zh，张工说Cohere multilingual。

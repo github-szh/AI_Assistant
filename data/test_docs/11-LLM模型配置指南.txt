@@ -1,0 +1,13 @@
+﻿AI Assistant LLM 模型配置指南
+
+一、支持的模型列表
+
+DeepSeek: deepseek-v4-base（通用对话和推理）。智谱: GLM-4（文档总结和知识问答）。OpenAI: gpt-3.5-turbo（备选方案）。
+
+二、模型路由策略
+
+建议优先使用 OpenAI gpt-3.5-turbo，其在通用问答场景表现稳定。DeepSeek 用于简单任务，智谱 GLM-4 用于中文文档处理。
+
+三、推荐配置
+
+生产环境建议配置多个模型做负载均衡。OpenAI 配额充足时全量走 OpenAI，不足时降级至 DeepSeek。

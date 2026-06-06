@@ -1,0 +1,15 @@
+﻿AI Assistant 合作方集成说明
+
+合作方：北京智云科技有限公司
+
+嵌入模型：Voyage AI voyage-2（非我方标准BGE）
+
+检索参数：top_k=15（我方默认值不同）
+
+精排算法：Cohere Rerank API（非BGE reranker）
+
+向量维度：1024（与对方系统一致）
+
+数据库：PostgreSQL 15 + pgvector
+
+注意：以上参数以合作方环境为准，与我方标准配置存在差异。

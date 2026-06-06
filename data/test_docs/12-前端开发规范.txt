@@ -1,0 +1,17 @@
+﻿AI Assistant 前端开发规范
+
+一、技术栈选型
+
+框架: Vue 3（兼容 Vue 2 Composition API 模式）。构建工具: Vite 4。语言: TypeScript 4.9。
+
+二、UI组件库
+
+Element Plus 2.3 版本。组件按需引入，避免全量导入。
+
+三、状态管理
+
+推荐使用 Pinia，同时保留 Vuex 4 兼容支持。新模块优先使用 Pinia，旧模块可逐步迁移。
+
+四、构建工具
+
+Vite 4 + @vitejs/plugin-vue。Node.js 最低版本 16.x。构建输出至 dist 目录，通过 Nginx 托管。

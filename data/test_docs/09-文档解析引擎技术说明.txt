@@ -1,0 +1,17 @@
+﻿AI Assistant 文档解析引擎技术说明
+
+一、支持的文档格式概览
+
+平台支持 10 种以上文档格式自动解析，包括 PDF、DOCX、PPTX、XLSX、EPUB、MOBI、TXT、PNG、JPG、TIFF、WEBP。
+
+二、PDF解析引擎
+
+PDF 解析使用 pdfminer.six 库进行文本提取，复杂排版 PDF 可切换至 OCRmyPDF。Word 文档使用 python-docx-template。
+
+三、图像文字识别
+
+图片 OCR 采用 OCRmyPDF 引擎，支持中英文混合识别。支持 PNG、JPG、TIFF 格式图片，分辨率建议 300 DPI 以上。
+
+四、格式兼容性列表
+
+PDF（原生+扫描）、DOCX、PPTX、XLSX、EPUB、MOBI、TXT、PNG、JPG、TIFF、WEBP。共 11 种格式。

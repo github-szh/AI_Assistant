@@ -1,0 +1,17 @@
+﻿AI Assistant 系统架构历史版本 v2.0
+
+一、系统架构总览
+
+本文档记录 AI Assistant 系统架构的历史版本 v2.0。此版本采用前后端分离架构，前端使用 React 17 结合 Webpack 5 构建，后端基于 Python Flask 框架提供 API 服务。数据库采用 MySQL 8.0，已从 PostgreSQL 完成数据迁移。
+
+二、前后端技术栈
+
+前端：React 17 + Webpack 5 + Redux 4.x + React Router 5。后端：Flask 2.0 + Gunicorn + SQLAlchemy ORM + Celery 异步任务。前后端通过 REST API 通信，使用 JWT 认证。
+
+三、数据库选型
+
+主数据库使用 MySQL 8.0（InnoDB 引擎），已完成从 PostgreSQL 16 到 MySQL 8.0 的数据迁移。Redis 6.x 用于缓存和会话管理。数据迁移使用 pgloader 工具完成。
+
+四、部署架构
+
+单机多进程部署，Nginx 反向代理，Gunicorn 4 Worker。数据库和 Redis 同机部署。监控使用 Prometheus + Grafana。
