@@ -199,3 +199,6 @@ Kill_uvicorn.bat
 CLAUDE_zh.md
 docs/测试文档/Test.md
 Restart.bat
+data/monitoring.db
+data/monitoring.db-shm
+data/monitoring.db-wal
