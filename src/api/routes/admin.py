@@ -128,17 +128,21 @@ async def list_users(user: dict = Depends(require_permission("tenant:users:manag
     try:
         if user.get("role") == "super_admin":
             rows = conn.execute(
-                """SELECT u.id, u.username, u.display_name, u.role, u.is_active, u.created_at,
+                """SELECT u.id, u.username, u.display_name, r.name AS role, u.is_active, u.created_at,
                           u.tenant_id, t.name
-                   FROM t_user u LEFT JOIN t_tenant t ON u.tenant_id = t.id
+                   FROM t_user u
+                   LEFT JOIN t_role r ON u.role_id = r.id
+                   LEFT JOIN t_tenant t ON u.tenant_id = t.id
                    ORDER BY u.id"""
             ).fetchall()
         else:
             tenant_id = user.get("tenant_id")
             rows = conn.execute(
-                """SELECT u.id, u.username, u.display_name, u.role, u.is_active, u.created_at,
+                """SELECT u.id, u.username, u.display_name, r.name AS role, u.is_active, u.created_at,
                           u.tenant_id, t.name
-                   FROM t_user u LEFT JOIN t_tenant t ON u.tenant_id = t.id
+                   FROM t_user u
+                   LEFT JOIN t_role r ON u.role_id = r.id
+                   LEFT JOIN t_tenant t ON u.tenant_id = t.id
                    WHERE u.tenant_id = %s ORDER BY u.id""",
                 [tenant_id],
             ).fetchall()
@@ -178,9 +182,15 @@ async def update_user_role(target_user_id: int, req: UserRoleUpdateRequest, user
             if target[1] != user.get("tenant_id"):
                 raise HTTPException(403, "无权操作其他租户的用户")
 
+        role_row = conn.execute(
+            "SELECT id FROM t_role WHERE name = %s", [req.role],
+        ).fetchone()
+        if not role_row:
+            raise HTTPException(400, f"角色 {req.role} 不存在")
+
         conn.execute(
-            "UPDATE t_user SET role = %s WHERE id = %s",
-            [req.role, target_user_id],
+            "UPDATE t_user SET role_id = %s WHERE id = %s",
+            [role_row[0], target_user_id],
         )
         conn.commit()
         return {"status": "ok", "message": f"用户角色已更新为 {req.role}"}

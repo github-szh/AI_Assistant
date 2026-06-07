@@ -106,8 +106,8 @@ async def register(req: RegisterRequest):
 
         # 注册用户，默认角色为 viewer
         row = conn.execute(
-            """INSERT INTO t_user (username, password_hash, display_name, role, tenant_id)
-               VALUES (%s, %s, %s, 'viewer', %s) RETURNING id""",
+            """INSERT INTO t_user (username, password_hash, display_name, role_id, tenant_id)
+               VALUES (%s, %s, %s, (SELECT id FROM t_role WHERE name = 'viewer'), %s) RETURNING id""",
             [req.username, pw_hash, req.display_name or req.username, tenant_id],
         ).fetchone()
         conn.commit()
@@ -133,8 +133,9 @@ async def login(req: LoginRequest):
     # 先查出用户（含非活跃），区分错误原因
     user_row = conn.execute(
         """SELECT u.id, u.username, u.password_hash, u.display_name,
-                  u.role, u.tenant_id, u.is_active, t.name, t.is_active AS tenant_active
+                  r.name AS role, u.tenant_id, u.is_active, t.name, t.is_active AS tenant_active
            FROM t_user u
+           LEFT JOIN t_role r ON u.role_id = r.id
            LEFT JOIN t_tenant t ON u.tenant_id = t.id
            WHERE u.username = %s""",
         [req.username],

@@ -1,3 +1,5 @@
+
+
 -- 父块上下文表：句子窗口检索模式中存储父chunk的原始文本，
 -- 子chunk命中向量检索后通过parent_id查找对应的父chunk。
 
@@ -12,6 +14,10 @@ CREATE TABLE public.chunk_contexts (
 
 
 ALTER TABLE public.chunk_contexts OWNER TO postgres;
+
+
+-- 用于在 PostgreSQL 中安装 pgvector 扩展，该扩展提供了 vector 数据类型以及向量相似度搜索功能。
+CREATE EXTENSION vector;
 
 -- 向量文档表（由PGVectorStore自动管理）：存储文档块的文本、
 -- 1024维向量嵌入和BM25全文检索索引，支持混合检索。
@@ -55,6 +61,44 @@ CREATE TABLE public.doc_summaries (
 
 
 ALTER TABLE public.doc_summaries OWNER TO postgres;
+
+-- 权限表：存储系统中所有可用的权限标识（如 document:view, chat:send 等）
+CREATE TABLE public.t_permission (
+    id integer NOT NULL,
+    code character varying(100) NOT NULL,
+    name character varying(200) NOT NULL
+);
+
+ALTER TABLE public.t_permission OWNER TO postgres;
+
+CREATE SEQUENCE public.t_permission_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+ALTER SEQUENCE public.t_permission_id_seq OWNER TO postgres;
+ALTER SEQUENCE public.t_permission_id_seq OWNED BY public.t_permission.id;
+
+-- 角色表：存储角色名称（super_admin / tenant_admin / editor / viewer）
+CREATE TABLE public.t_role (
+    id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    description character varying(200) DEFAULT ''::character varying
+);
+
+ALTER TABLE public.t_role OWNER TO postgres;
+
+CREATE SEQUENCE public.t_role_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+ALTER SEQUENCE public.t_role_id_seq OWNER TO postgres;
+ALTER SEQUENCE public.t_role_id_seq OWNED BY public.t_role.id;
+
+-- 角色-权限关联表：多对多关联角色与权限
+CREATE TABLE public.t_role_permission (
+    role_id integer NOT NULL,
+    permission_id integer NOT NULL
+);
+
+ALTER TABLE public.t_role_permission OWNER TO postgres;
 
 -- 文档元数据表：记录上传文档的元信息（文件名、类型、大小、页数、
 -- 解析器、MD5哈希、切片数量等），与data_documents中的向量数据对应。
@@ -160,7 +204,7 @@ ALTER SEQUENCE public.t_tenant_id_seq OWNER TO postgres;
 
 ALTER SEQUENCE public.t_tenant_id_seq OWNED BY public.t_tenant.id;
 
--- 用户表：存储系统用户信息，包括密码哈希、角色（viewer/editor/tenant_admin/super_admin）、
+-- 用户表：存储系统用户信息，包括密码哈希、角色（关联 t_role）、
 -- 所属租户等，用户隶属于租户，不同租户间数据隔离。
 
 CREATE TABLE public.t_user (
@@ -169,9 +213,9 @@ CREATE TABLE public.t_user (
     password_hash character varying(255) NOT NULL,
     display_name character varying(100) DEFAULT ''::character varying,
     tenant_id integer,
+    role_id integer NOT NULL,
     is_active boolean DEFAULT true,
-    created_at timestamp with time zone DEFAULT now(),
-    role character varying(20) DEFAULT 'viewer'::character varying
+    created_at timestamp with time zone DEFAULT now()
 );
 
 
@@ -199,6 +243,10 @@ ALTER TABLE ONLY public.t_session_message ALTER COLUMN id SET DEFAULT nextval('p
 
 ALTER TABLE ONLY public.t_tenant ALTER COLUMN id SET DEFAULT nextval('public.t_tenant_id_seq'::regclass);
 
+ALTER TABLE ONLY public.t_permission ALTER COLUMN id SET DEFAULT nextval('public.t_permission_id_seq'::regclass);
+
+ALTER TABLE ONLY public.t_role ALTER COLUMN id SET DEFAULT nextval('public.t_role_id_seq'::regclass);
+
 ALTER TABLE ONLY public.t_user ALTER COLUMN id SET DEFAULT nextval('public.t_user_id_seq'::regclass);
 
 ALTER TABLE ONLY public.chunk_contexts
@@ -209,6 +257,21 @@ ALTER TABLE ONLY public.data_documents
 
 ALTER TABLE ONLY public.doc_summaries
     ADD CONSTRAINT doc_summaries_pkey PRIMARY KEY (doc_id);
+
+ALTER TABLE ONLY public.t_permission
+    ADD CONSTRAINT t_permission_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.t_permission
+    ADD CONSTRAINT t_permission_code_key UNIQUE (code);
+
+ALTER TABLE ONLY public.t_role
+    ADD CONSTRAINT t_role_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.t_role
+    ADD CONSTRAINT t_role_name_key UNIQUE (name);
+
+ALTER TABLE ONLY public.t_role_permission
+    ADD CONSTRAINT t_role_permission_pkey PRIMARY KEY (role_id, permission_id);
 
 ALTER TABLE ONLY public.t_document
     ADD CONSTRAINT t_document_doc_id_key UNIQUE (doc_id);
@@ -268,6 +331,15 @@ ALTER TABLE ONLY public.t_session_info
 
 ALTER TABLE ONLY public.t_session_message
     ADD CONSTRAINT t_session_message_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.t_session_info(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.t_role_permission
+    ADD CONSTRAINT t_role_permission_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.t_role(id);
+
+ALTER TABLE ONLY public.t_role_permission
+    ADD CONSTRAINT t_role_permission_permission_id_fkey FOREIGN KEY (permission_id) REFERENCES public.t_permission(id);
+
+ALTER TABLE ONLY public.t_user
+    ADD CONSTRAINT t_user_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.t_role(id);
 
 ALTER TABLE ONLY public.t_user
     ADD CONSTRAINT t_user_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.t_tenant(id);
