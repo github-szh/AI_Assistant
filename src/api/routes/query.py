@@ -58,9 +58,9 @@ async def query_knowledge_stream(
 async def query_knowledge_eval(
     req: QueryRequest,
     engine: QueryEngine = Depends(get_query_engine),
-    user: dict = Depends(require_permission("knowledge:query")),
+    user: dict = Depends(require_permission("quality:admin")),
 ):
-    """Query the knowledge base with detailed quality evaluation (non-streaming)."""
+    """Query the knowledge base with detailed quality evaluation (admin-only)."""
     logger.info("RAG eval: '%s' (top_k=%d, tenant=%s)", req.question[:100], req.top_k, user.get("tenant_id"))
 
     # 1. Get answer + sources + context

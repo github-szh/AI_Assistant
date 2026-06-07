@@ -14,20 +14,15 @@ INSERT INTO t_permission (code, name) VALUES
     ('document:view', 'View Documents'),
     ('document:upload', 'Upload Documents'),
     ('document:delete', 'Delete Documents'),
-    ('document:download', 'Download Documents'),
     ('chat:send', 'Send Messages'),
     ('chat:view', 'View Sessions'),
     ('chat:delete', 'Delete Sessions'),
-    ('chat:export', 'Export Sessions'),
     ('knowledge:query', 'Query Knowledge Base'),
-    ('knowledge:manage', 'Manage Knowledge Base'),
     ('quality:view', 'View Quality Evaluation'),
     ('quality:admin', 'Admin Quality Evaluation'),
-    ('tenant:view', 'View Tenant'),
     ('tenant:manage', 'Manage Tenant'),
     ('tenant:users:manage', 'Manage Users'),
     ('system:settings:view', 'View System Settings'),
-    ('system:llm:switch', 'Switch LLM Model'),
     ('*', 'All Permissions');
 
 -- 3. 插入角色定义
@@ -46,22 +41,21 @@ INSERT INTO t_role_permission (role_id, permission_id)
 INSERT INTO t_role_permission (role_id, permission_id)
     SELECT r.id, p.id FROM t_role r, t_permission p
     WHERE r.name = 'tenant_admin' AND p.code IN (
-        'tenant:view', 'tenant:manage', 'tenant:users:manage',
-        'document:upload', 'document:view', 'document:delete', 'document:download',
-        'chat:send', 'chat:view', 'chat:delete', 'chat:export',
-        'knowledge:query', 'knowledge:manage',
+        'tenant:manage', 'tenant:users:manage',
+        'document:upload', 'document:view', 'document:delete',
+        'chat:send', 'chat:view', 'chat:delete',
+        'knowledge:query',
         'quality:view', 'quality:admin',
-        'system:settings:view', 'system:llm:switch'
+        'system:settings:view'
     );
 
 -- editor
 INSERT INTO t_role_permission (role_id, permission_id)
     SELECT r.id, p.id FROM t_role r, t_permission p
     WHERE r.name = 'editor' AND p.code IN (
-        'document:upload', 'document:view', 'document:delete', 'document:download',
+        'document:upload', 'document:view', 'document:delete',
         'chat:send', 'chat:view', 'chat:delete',
-        'knowledge:query', 'knowledge:manage',
-        'quality:view'
+        'knowledge:query'
     );
 
 -- viewer
@@ -70,8 +64,7 @@ INSERT INTO t_role_permission (role_id, permission_id)
     WHERE r.name = 'viewer' AND p.code IN (
         'document:view',
         'chat:send', 'chat:view', 'chat:delete',
-        'knowledge:query',
-        'quality:view'
+        'knowledge:query'
     );
 
 -- 5. 创建各角色用户（密码见注释，均使用 bcrypt 加密，cost=4）

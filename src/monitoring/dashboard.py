@@ -8,8 +8,10 @@ Provides:
 import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
+
+from src.api.permissions import require_permission
 
 from src.monitoring.metrics import (
     get_gpu_metrics,
@@ -27,7 +29,7 @@ router = APIRouter()
 
 
 @router.post("/api/alerts/ack")
-async def ack_alert(body: dict):
+async def ack_alert(body: dict, user: dict = Depends(require_permission("quality:admin"))):
     from src.monitoring.storage import acknowledge_alert
     if body.get("all"):
         from src.monitoring.storage import get_recent_alerts
@@ -40,7 +42,7 @@ async def ack_alert(body: dict):
 
 
 @router.get("/api/phoenix/status")
-async def phoenix_status():
+async def phoenix_status(user: dict = Depends(require_permission("quality:view"))):
     """Check if Arize Phoenix is enabled and running."""
     from src.config import settings
     if not settings.phoenix_enabled:
@@ -55,7 +57,7 @@ async def phoenix_status():
 
 
 @router.get("/api/phoenix/info")
-async def phoenix_info():
+async def phoenix_info(user: dict = Depends(require_permission("quality:view"))):
     """Return Phoenix connection details for the frontend."""
     from src.config import settings
     base = "http://localhost:6006"
@@ -67,7 +69,7 @@ async def phoenix_info():
 
 
 @router.get("/monitoring")
-async def monitoring_json():
+async def monitoring_json(user: dict = Depends(require_permission("quality:view"))):
     now = time.time()
 
     # System resources (read directly via psutil, bypass Prometheus Gauge corruption)
@@ -347,5 +349,5 @@ setInterval(refresh,5000);
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
+async def dashboard(user: dict = Depends(require_permission("quality:view"))):
     return _DASHBOARD_HTML
