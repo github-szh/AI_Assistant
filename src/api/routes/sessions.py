@@ -26,6 +26,7 @@ async def create_session(user: dict = Depends(require_permission("chat:send"))):
             [sid, "新对话", user["user_id"], tenant_id],
         )
         conn.commit()
+    logger.info("会话已创建 (sid=%s, user=%s)", sid, user["username"])
     return {"id": sid, "title": "新对话", "messages": []}
 
 
@@ -68,12 +69,19 @@ async def get_session(
     user: dict = Depends(require_permission("chat:view")),
 ):
     # 权限与多租户：校验会话归属
+    is_super = user.get("role") == "super_admin"
     tenant_id = user.get("tenant_id")
     async with get_pg_connection() as conn:
-        row = conn.execute(
-            "SELECT id, title, user_id, summary FROM t_session_info WHERE id=%s AND tenant_id=%s",
-            [sid, tenant_id],
-        ).fetchone()
+        if is_super:
+            row = conn.execute(
+                "SELECT id, title, user_id, summary FROM t_session_info WHERE id=%s",
+                [sid],
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, title, user_id, summary FROM t_session_info WHERE id=%s AND tenant_id=%s",
+                [sid, tenant_id],
+            ).fetchone()
         if not row:
             raise HTTPException(404, "会话不存在")
         if row[2] != user["user_id"]:
@@ -114,28 +122,44 @@ async def get_session(
 @router.patch("/{sid}")
 async def rename_session(sid: str, title: str, user: dict = Depends(require_permission("chat:send"))):
     # 权限与多租户：校验租户
+    is_super = user.get("role") == "super_admin"
     tenant_id = user.get("tenant_id")
     async with get_pg_connection() as conn:
-        result = conn.execute(
-            "UPDATE t_session_info SET title=%s, updated_at=NOW() WHERE id=%s AND user_id=%s AND tenant_id=%s",
-            [title[:100], sid, user["user_id"], tenant_id],
-        )
+        if is_super:
+            result = conn.execute(
+                "UPDATE t_session_info SET title=%s, updated_at=NOW() WHERE id=%s AND user_id=%s",
+                [title[:100], sid, user["user_id"]],
+            )
+        else:
+            result = conn.execute(
+                "UPDATE t_session_info SET title=%s, updated_at=NOW() WHERE id=%s AND user_id=%s AND tenant_id=%s",
+                [title[:100], sid, user["user_id"], tenant_id],
+            )
         conn.commit()
         if result.rowcount == 0:
             raise HTTPException(404, "会话不存在")
+    logger.info("会话已重命名 (sid=%s, title=%s)", sid, title[:100])
     return {"status": "ok"}
 
 
 @router.delete("/{sid}")
 async def delete_session(sid: str, user: dict = Depends(require_permission("chat:send"))):
     # 权限与多租户：校验租户
+    is_super = user.get("role") == "super_admin"
     tenant_id = user.get("tenant_id")
     async with get_pg_connection() as conn:
-        result = conn.execute(
-            "DELETE FROM t_session_info WHERE id=%s AND user_id=%s AND tenant_id=%s",
-            [sid, user["user_id"], tenant_id],
-        )
+        if is_super:
+            result = conn.execute(
+                "DELETE FROM t_session_info WHERE id=%s AND user_id=%s",
+                [sid, user["user_id"]],
+            )
+        else:
+            result = conn.execute(
+                "DELETE FROM t_session_info WHERE id=%s AND user_id=%s AND tenant_id=%s",
+                [sid, user["user_id"], tenant_id],
+            )
         conn.commit()
         if result.rowcount == 0:
             raise HTTPException(404, "会话不存在")
+    logger.info("会话已删除 (sid=%s, user=%s)", sid, user["username"])
     return {"status": "deleted"}

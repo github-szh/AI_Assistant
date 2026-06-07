@@ -200,17 +200,29 @@ def _search_summaries(query_embedding: list[float], top_k: int = 3,
     """Level 1: search document summaries, return top-k relevant doc info."""
     try:
         with get_pg_connection_sync() as conn:
-            rows = conn.execute(
-                """
-                SELECT doc_id, summary, filename, chunk_count,
-                       1 - (embedding <=> %s::vector) AS similarity
-                FROM doc_summaries
-                WHERE tenant_id = %s
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-                """,
-                [query_embedding, tenant_id, query_embedding, top_k],
-            ).fetchall()
+            if tenant_id is not None:
+                rows = conn.execute(
+                    """
+                    SELECT doc_id, summary, filename, chunk_count,
+                           1 - (embedding <=> %s::vector) AS similarity
+                    FROM doc_summaries
+                    WHERE tenant_id = %s
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    [query_embedding, tenant_id, query_embedding, top_k],
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT doc_id, summary, filename, chunk_count,
+                           1 - (embedding <=> %s::vector) AS similarity
+                    FROM doc_summaries
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    [query_embedding, query_embedding, top_k],
+                ).fetchall()
             return [
                 {"doc_id": r[0], "summary": r[1], "filename": r[2],
                  "chunk_count": r[3], "similarity": r[4]}

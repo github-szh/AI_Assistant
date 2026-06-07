@@ -474,9 +474,14 @@ async def _count_documents(tenant_id: int | None = None) -> int:
     try:
         from src.api.deps import get_pg_connection
         async with get_pg_connection() as conn:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM t_document WHERE tenant_id = %s", [tenant_id],
-            ).fetchone()[0]
+            if tenant_id is not None:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM t_document WHERE tenant_id = %s", [tenant_id],
+                ).fetchone()[0]
+            else:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM t_document",
+                ).fetchone()[0]
             return count
     except Exception as exc:
         logger.warning("文档计数失败: %s, 默认 0（跳过两级检索）", exc)

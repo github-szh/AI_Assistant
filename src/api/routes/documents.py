@@ -112,14 +112,22 @@ async def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
 @router.get("/{doc_id}/download")
 async def download_document(doc_id: str, user: dict = Depends(require_permission("document:download"))):
     """Download the original uploaded file."""
+    is_super = user.get("role") == "super_admin"
     tenant_id = user.get("tenant_id")
     async with get_pg_connection() as conn:
-        row = conn.execute(
-            "SELECT filename, file_type FROM t_document WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        ).fetchone()
+        if is_super:
+            row = conn.execute(
+                "SELECT filename, file_type FROM t_document WHERE doc_id = %s",
+                [doc_id],
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT filename, file_type FROM t_document WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            ).fetchone()
 
     if not row:
+        logger.warning("文件下载失败, doc_id=%s 不存在或无权访问", doc_id)
         raise HTTPException(404, "文档不存在")
 
     filename, file_type = row
@@ -127,8 +135,10 @@ async def download_document(doc_id: str, user: dict = Depends(require_permission
     file_path = Path(settings.data_dir) / "documents" / f"{doc_id}{ext}"
 
     if not file_path.is_file():
+        logger.warning("文件下载失败, 原始文件不存在: %s", file_path)
         raise HTTPException(404, "原始文件不存在，可能已被清理")
 
+    logger.info("文件 %s 下载成功 (doc_id=%s)", filename, doc_id)
     return FileResponse(
         path=str(file_path),
         filename=filename,

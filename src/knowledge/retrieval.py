@@ -359,7 +359,7 @@ class HybridRetriever:
             scores = [s for _, s in ranked if s is not None]
             max_score = max(scores) if scores else 0.0
             query_hash = str(hash(query))
-            save_rag_query(query_hash, query, max_score, len(reranked_nodes), time.monotonic() - _rag_start)
+            save_rag_query(query_hash, query, max_score, len(reranked_nodes), time.monotonic() - _rag_start, tenant_id)
         except Exception:
             pass
 

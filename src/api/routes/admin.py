@@ -83,6 +83,7 @@ async def create_tenant(req: TenantCreateRequest, user: dict = Depends(require_p
                 [req.name, req.code],
             )
             conn.commit()
+            logger.info("租户已创建 (name=%s, code=%s, 操作人=%s)", req.name, req.code, user.get("username"))
             return {"status": "ok", "message": f"租户 {req.name} 创建成功"}
     except Exception as e:
         if "unique" in str(e).lower():
@@ -113,6 +114,7 @@ async def update_tenant(tenant_id: int, req: TenantUpdateRequest, user: dict = D
             params,
         )
         conn.commit()
+        logger.info("租户已更新 (tenant_id=%s, 操作人=%s)", tenant_id, user.get("username"))
         return {"status": "ok", "message": "租户更新成功"}
 
 
@@ -231,6 +233,7 @@ async def update_user_role(target_user_id: int, req: UserRoleUpdateRequest, user
             [req.role, target_user_id],
         )
         conn.commit()
+        logger.info("用户角色已更新 (user_id=%s, %s → %s, 操作人=%s)", target_user_id, target_role, req.role, user.get("username"))
         return {"status": "ok", "message": f"用户角色已更新为 {req.role}"}
 
 
@@ -261,6 +264,7 @@ async def toggle_user_active(target_user_id: int, user: dict = Depends(require_p
             [new_status, target_user_id],
         )
         conn.commit()
+        logger.info("用户状态已切换 (user_id=%s, is_active=%s, 操作人=%s)", target_user_id, new_status, user.get("username"))
         return {"status": "ok", "is_active": new_status}
 
 

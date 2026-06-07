@@ -65,12 +65,18 @@ def init_db() -> None:
             max_score REAL NOT NULL DEFAULT 0,
             score_bucket TEXT NOT NULL DEFAULT 'none',
             chunk_count INTEGER NOT NULL DEFAULT 0,
-            elapsed REAL NOT NULL DEFAULT 0
+            elapsed REAL NOT NULL DEFAULT 0,
+            tenant_id INTEGER
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_ts ON llm_calls(ts DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_http_requests_ts ON http_requests(ts DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rag_queries_ts ON rag_queries(ts DESC)")
+    # 迁移：为已有数据库加 tenant_id 列
+    try:
+        conn.execute("ALTER TABLE rag_queries ADD COLUMN tenant_id INTEGER")
+    except Exception:
+        pass
     conn.commit()
     logger.info("Monitoring DB initialized at %s", _get_db_path())
 
@@ -116,13 +122,13 @@ def get_cost_summary(days: int = 7) -> list[dict]:
         return []
 
 
-def save_rag_query(query_hash: str, query_text: str, max_score: float, chunk_count: int, elapsed: float) -> None:
+def save_rag_query(query_hash: str, query_text: str, max_score: float, chunk_count: int, elapsed: float, tenant_id: int | None = None) -> None:
     try:
         conn = _get_conn()
         bucket = _score_bucket(max_score)
         conn.execute(
-            "INSERT INTO rag_queries (ts, query_hash, query_text, max_score, score_bucket, chunk_count, elapsed) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (time.time(), query_hash, query_text[:200], max_score, bucket, chunk_count, elapsed),
+            "INSERT INTO rag_queries (ts, query_hash, query_text, max_score, score_bucket, chunk_count, elapsed, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (time.time(), query_hash, query_text[:200], max_score, bucket, chunk_count, elapsed, tenant_id),
         )
         conn.commit()
     except Exception:

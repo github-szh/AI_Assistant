@@ -44,12 +44,12 @@ async def delete_document(doc_id: str, user: dict = Depends(require_permission("
             conn.execute("DELETE FROM doc_summaries WHERE doc_id = %s", [doc_id])
             conn.execute("DELETE FROM chunk_contexts WHERE doc_id = %s", [doc_id])
         else:
-            conn.execute(
+            deleted_db = conn.execute(
                 """DELETE FROM data_documents
                    WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s
                    AND metadata_->>'tenant_id' = %s""",
                 [doc_id, str(tenant_id)],
-            )
+            ).rowcount
             deleted_td = conn.execute(
                 "DELETE FROM t_document WHERE doc_id = %s AND tenant_id = %s",
                 [doc_id, tenant_id],
@@ -69,6 +69,7 @@ async def delete_document(doc_id: str, user: dict = Depends(require_permission("
     if not deleted_db and not deleted_td and not deleted_fs:
         raise HTTPException(404, f"文档 {doc_id} 不存在")
 
+    logger.info("文档 %s 已删除 (向量=%d, 元数据=%d, 本地=%s)", doc_id, deleted_db, deleted_td, "是" if deleted_fs else "否")
     return DeleteDocumentResponse(
         doc_id=doc_id,
         deleted=True,

@@ -109,6 +109,7 @@ async def register(req: RegisterRequest):
             raise HTTPException(500, "注册失败")
 
     token = create_jwt(user_id, req.username, "viewer", tenant_id)
+    logger.info("用户 %s 注册成功 (tenant=%s)", req.username, tenant_name)
     return AuthResponse(
         token=token, user_id=user_id, username=req.username,
         display_name=req.display_name or req.username,
@@ -143,6 +144,7 @@ async def login(req: LoginRequest):
         raise HTTPException(401, "所属租户已被禁用，请联系管理员")
 
     token = create_jwt(user_row[0], username, role, tenant_id)
+    logger.info("用户 %s 登录成功 (role=%s, tenant=%s)", username, role, tenant_name or "无")
     return AuthResponse(
         token=token, user_id=user_row[0], username=username,
         display_name=display_name or username,

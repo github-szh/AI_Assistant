@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.schemas import ChatRequest, ChatResponse
 from src.api.permissions import require_permission
@@ -53,6 +53,22 @@ async def chat(req: ChatRequest, user: dict = Depends(require_permission("chat:s
 
     # Auto-persist messages if session_id provided
     if req.session_id and req.messages:
+        # 权限与多租户：校验 session 归属
+        is_super = user.get("role") == "super_admin"
+        tenant_id = user.get("tenant_id")
+        async with get_pg_connection() as conn:
+            if is_super:
+                row = conn.execute(
+                    "SELECT 1 FROM t_session_info WHERE id=%s", [req.session_id]
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT 1 FROM t_session_info WHERE id=%s AND tenant_id=%s",
+                    [req.session_id, tenant_id],
+                ).fetchone()
+            if not row:
+                raise HTTPException(403, "无权访问该会话")
+
         try:
             async with get_pg_connection() as conn:
                 # Save the last user message

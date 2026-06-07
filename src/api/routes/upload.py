@@ -196,13 +196,16 @@ async def upload_document(
     if parse_error:
         status = "parse_failed"
         msg = f"解析失败: {parse_error}"
+        logger.warning("文件 %s 上传失败: %s", filename, parse_error)
     elif not parsed:
         status = "no_text"
         msg = "图片中未检测到可识别文字" if ext.lower() in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp") else "文档中未提取到文字内容"
+        logger.warning("文件 %s 上传失败: 未提取到文字内容", filename)
     else:
         status = "indexed" if chunks else "parsed"
         ingest_msg = f", {len(chunks)} chunks created"
         msg = f"Parsed with {parser_used}, {len(chunks)} chunks created{ingest_msg}"
+        logger.info("文件 %s 上传成功 (doc_id=%s, chunks=%d)", filename, doc_id, len(chunks))
 
     return UploadResponse(
         doc_id=doc_id,
@@ -380,12 +383,15 @@ async def upload_stream(
             conn.commit()
 
         if parse_error:
+            logger.warning("文件 %s 上传失败(stream): %s", filename, parse_error)
             yield f"data: {_json.dumps({'step':'done','msg':f'解析失败: {parse_error}','doc_id':doc_id,'status':'parse_failed'})}\n\n"
         elif not parsed:
             hint = "图片中未检测到可识别文字" if ext.lower() in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp") else "文档中未提取到文字内容"
+            logger.warning("文件 %s 上传失败(stream): 未提取到文字内容", filename)
             yield f"data: {_json.dumps({'step':'done','msg':hint,'doc_id':doc_id,'status':'no_text'})}\n\n"
         else:
             n_ingested = len(chunks)
+            logger.info("文件 %s 上传成功(stream) (doc_id=%s, chunks=%d)", filename, doc_id, n_ingested)
             yield f"data: {_json.dumps({'step':'done','msg':f'入库完成({n_ingested}条)','doc_id':doc_id,'chunks':len(chunks),'parser':parser_used,'status':'done'})}\n\n"
 
     return StreamingResponse(
