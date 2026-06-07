@@ -17,7 +17,6 @@ from src.config import settings
 from src.llm.router import get_llm
 from src.api.schemas import SourceInfo
 from src.quality.guard import QualityGuard
-from src.quality.retrieval_quality import RetrievalQualityChecker
 from src.storage.cache import get_memory_cache  # 进程内缓存，相同问题5分钟内直接返回
 
 logger = logging.getLogger(__name__)
@@ -199,7 +198,10 @@ class QueryEngine:
                 doc_id=node.metadata.get("doc_id", ""),
                 filename=node.metadata.get("filename", ""),
                 chunk_index=node.metadata.get("chunk_index"),
-                score=round(1.0 - getattr(node, "score", 0), 4) if getattr(node, "score", None) else None,
+                score=round(
+                    getattr(node, "score", 0) if getattr(node, '_reranked', False)
+                    else (1.0 - getattr(node, "score", 0)), 4
+                ) if getattr(node, "score", None) is not None else None,
                 snippet=content[:300],
             ))
 
@@ -272,44 +274,8 @@ class QueryEngine:
         )
         response = {"answer": answer, "sources": result["sources"]}
 
-        # ── 质量检测钩子 ──────────────────────────────────
-        # 包括预生成检查（检索质量过低时跳过 LLM 生成）和
-        # 后生成检查（安全/事实性/相关性评估）
-        if self.quality_guard is not None and settings.quality_guard_enabled:
-            # 预生成检查：检索质量过低时跳过 LLM 生成
-            if result.get("nodes"):
-                scores = [getattr(n, "score", 0) or 0 for n in result["nodes"]]
-                if RetrievalQualityChecker.should_skip_llm(
-                    scores, settings.retrieval_stage1_threshold,
-                ):
-                    logger.info(
-                        "质检预生成检查触发: 检索质量过低(最高分=%.3f)，跳过 LLM 生成",
-                        max(scores) if scores else 0,
-                    )
-                    response = {
-                        "answer": "知识库中没有找到足够相关的信息。请尝试换一种方式提问。",
-                        "sources": result["sources"],
-                    }
-                    cache.set(key, response, ttl=300)
-                    return response
-
-            # 后生成检查：安全/事实性/相关性评估
-            try:
-                checked_response, _ = self.quality_guard.run(
-                    query=question,
-                    answer=answer,
-                    context=result.get("context", ""),
-                    sources=result["sources"],
-                )
-                response = checked_response # 替换为质检后的响应
-            except Exception as exc:
-                logger.warning("质量检测异常，已跳过质检: %s", exc)
-                # fail-open: 返回原始 answer，quality 字段置 None
-                response["quality"] = None
-
         # ── 写入缓存 ──────────────────────────────────────
         # TTL=300 秒（5分钟），之后重新检索生成
-        # 缓存质检后的结果（含 quality 字段），避免重复质检
         cache.set(key, response, ttl=300)
         logger.info("RAG_QUERY %s", json.dumps({
             "question": question,
@@ -321,7 +287,7 @@ class QueryEngine:
     # ------------------------------------------------------------------
     # eval query (for quality evaluation endpoint)
     # ------------------------------------------------------------------
-    def query_eval(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
+    async def query_eval(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
                    messages: list[dict] | None = None, tenant_id: int | None = None) -> dict:
         """Like query() but also returns context for quality evaluation.
 
@@ -335,7 +301,7 @@ class QueryEngine:
             logger.debug("RAG eval cache hit: '%s'", question[:60])
             return cached
 
-        result = self._retrieve(question, top_k, doc_ids, messages, tenant_id)
+        result = await self._retrieve(question, top_k, doc_ids, messages, tenant_id)
         if result is None:
             return {"answer": "向量数据库未就绪", "sources": [], "context": ""}
         if not result["nodes"]:
@@ -379,68 +345,17 @@ class QueryEngine:
         prompt = self._build_prompt(question, result["context"])
         llm = get_llm()
 
-        # 收集所有流式回答 chunk，供后续质检使用
-        # 质检需要对完整文本进行评估，因此需要在流式过程中累积每个 chunk
+        # 收集流式回答 chunk，用于日志记录
         _stream_chunks: list[str] = []
         for chunk in llm.chat_stream(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=1024,
         ):
-            _stream_chunks.append(chunk) # 收集 chunk，质检时拼接为完整回答
+            _stream_chunks.append(chunk)
             yield f"data: {json.dumps({'c': chunk})}\n\n"
 
-        # ── 质检：LLM 生成完毕后运行 QualityGuard ──────────────
-        # 收集完整的回答文本用于质检（QualityGuard 需要完整文本才能评估各项维度）
-        # 注意：质检是后置的，不阻塞流式输出，结果通过 quality SSE 事件推送
-        # 将 quality 事件放在 {"done": True} 之前的原因是：
-        # 前端收到 done 事件后停止读取，quality 必须在 done 之前到达
-        if self.quality_guard is not None and settings.quality_guard_enabled:
-            full_answer = "".join(_stream_chunks) # 汇总所有 chunk 得到完整回答
-            try:
-                context = result.get("context", "")
-                sources = result.get("sources", [])
-                _, intervention = self.quality_guard.run(
-                    query=question,
-                    answer=full_answer,
-                    context=context,
-                    sources=sources,
-                )
-
-                # 根据干预动作构建 quality SSE 事件
-                quality_event: dict = {
-                    "type": "quality",
-                    "intervened": intervention.intervened,
-                    "action": intervention.action,
-                    "reason": intervention.reason,
-                    "violations": [
-                        {
-                            "dimension": v.dimension,
-                            "passed": v.passed,
-                            "score": v.score,
-                            "details": v.details,
-                        }
-                        for v in intervention.violations
-                    ],
-                }
-                # 不同动作附加不同字段，为前端提供展示所需信息
-                if intervention.action == "block":
-                    # 拦截：前端需要替换已显示的文本为安全消息
-                    quality_event["override_answer"] = "抱歉，根据内容安全策略，无法展示此回答。"
-                elif intervention.action == "warn":
-                    # 警告：前端在回答下方追加警告提示
-                    quality_event["warning_text"] = "此回答部分内容可能存在问题，请谨慎参考。"
-                elif intervention.action == "degrade":
-                    # 降级：前端清空回答，仅保留来源
-                    quality_event["degrade_reason"] = "回答内容与检索来源不一致，已自动降级。"
-
-                yield f"data: {json.dumps(quality_event, ensure_ascii=False)}\n\n"
-            except Exception as exc:
-                # fail-open: 质检异常时不阻塞流式，仅记录日志，不推送 quality 事件
-                logger.warning("流式质检异常，已跳过: %s", exc)
-
         # ── 流式结束标记 ─────────────────────────────────────
-        # done 事件必须放在 quality 事件之后，因为前端收到 done 后停止读取
         yield f"data: {json.dumps({'done': True})}\n\n"
         logger.info("RAG_QUERY_STREAM %s", json.dumps({
             "question": question,
@@ -500,12 +415,23 @@ def get_query_engine() -> QueryEngine:
         llm = get_llm()
 
         # RAGAS 风格事实性检查器（平滑评分 0~1，非二元）
-        ragas_faithfulness = RagasFaithfulness(llm_provider=llm)
-        ragas_correctness = RagasFactualCorrectness(llm_provider=llm, weight=0.5)
+        # 注入 judge 模型配置，确保 claim 分解使用轻量模型而非默认生成模型
+        ragas_judge_config = {
+            "quality_judge_model": settings.quality_judge_model,
+            "quality_judge_provider": settings.quality_judge_provider,
+        }
+        ragas_faithfulness = RagasFaithfulness(llm_provider=llm, config=ragas_judge_config)
+        ragas_correctness = RagasFactualCorrectness(llm_provider=llm, config=ragas_judge_config)
         logger.info("事实性检查模式: RAGAS-style（平滑评分，F1 + 语义相似度融合）")
 
         checkers = {
-            "safety": SafetyChecker(llm_provider=llm),
+            "safety": SafetyChecker(llm_provider=llm, config={
+                "quality_judge_model": settings.quality_judge_model,
+                "quality_judge_provider": settings.quality_judge_provider,
+                "quality_judge_timeout_s": settings.quality_judge_timeout_s,
+                "quality_fail_closed_for_safety": settings.quality_fail_closed_for_safety,
+                "prompts_dir": settings.prompts_dir,
+            }),
             # 替换旧的 FactualityChecker 为 RAGAS 忠实度检查
             "factuality": ragas_faithfulness,
             # 新增 RAGAS 答案正确性检查（需要 ground_truth 时生效）

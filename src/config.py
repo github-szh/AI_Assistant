@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     rerank_enabled: bool = True  # toggle reranker on/off
 
     # Quality Guard 配置
-    quality_guard_enabled: bool = True
+    quality_guard_enabled: bool = False
 
     # Judge 模型配置（交叉评判——与生成模型不同，避免自我增强偏差）
     quality_judge_provider: str = ""   # 空字符串表示跟随 llm_provider

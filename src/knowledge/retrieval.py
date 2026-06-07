@@ -365,6 +365,19 @@ class HybridRetriever:
                 object.__setattr__(node, 'score', score)
                 reranked_nodes.append(node)
 
+        # Min-max 归一化 BGE logits 到 [0, 1]，确保分数在统一量纲
+        # 同时标记 _reranked，供下游 query_engine 区分快路径 (RRF) 和深度路径 (BGE)
+        if reranked_nodes:
+            all_scores = [getattr(n, 'score', 0.0) for n in reranked_nodes]
+            s_min, s_max = min(all_scores), max(all_scores)
+            for n in reranked_nodes:
+                s = getattr(n, 'score', 0.0)
+                if s_max > s_min:
+                    object.__setattr__(n, 'score', (s - s_min) / (s_max - s_min))
+                else:
+                    object.__setattr__(n, 'score', 0.5)  # 单条结果，中性分
+                object.__setattr__(n, '_reranked', True)
+
         logger.debug("Reranker: %d → %d nodes", len(expanded), len(reranked_nodes))
 
         # Record RAG quality metrics

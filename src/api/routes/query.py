@@ -132,7 +132,7 @@ async def query_knowledge_eval(
     logger.info("RAG eval: '%s' (top_k=%d, tenant=%s)", req.question[:100], req.top_k, user.get("tenant_id"))
 
     # 1. Get answer + sources + context
-    eval_result = engine.query_eval(
+    eval_result = await engine.query_eval(
         question=req.question, top_k=req.top_k,
         doc_ids=req.doc_ids, messages=req.messages,
         tenant_id=user.get("tenant_id"),
@@ -159,6 +159,9 @@ async def query_knowledge_eval(
             # Group verdicts by dimension
             for v in intervention.violations:
                 dim = v.dimension or "unknown"
+                # 没有标准答案时跳过 answer_correctness 维度（没有可对比的基准）
+                if dim == "answer_correctness" and not req.ground_truth:
+                    continue
                 quality_dict[dim] = VerdictDetail(
                     dimension=dim,
                     passed=v.passed,

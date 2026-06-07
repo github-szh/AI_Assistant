@@ -1,12 +1,8 @@
-"""RAGAS 风格的事实正确性和忠实度检查器。
+"""RAG 质量检查器：事实性（忠实度）+ 答案正确性 + 相关性。
 
-实现平滑评分（0.0-1.0），使用 RAGAS 方法论：
-  1. 通过 LLM 将文本分解为原子事实声明（claims）
-  2. 计算回答与标准答案在声明级别上的 F1 重叠
-  3. 通过嵌入模型的余弦相似度计算语义相似度
-  4. 加权融合：得分 = F1 × 权重 + 语义相似度 × (1-权重)
-
-不依赖 ragas 包——从零实现该算法。
+- RagasFaithfulness: 事实性 — claim 分解 + jieba 支撑检查
+- RagasFactualCorrectness: 答案正确性 — LLM Judge 语义对比（需 ground_truth）
+- RagasAnswerRelevancy: 相关性 — Embedding 相似度 + 关键词覆盖
 """
 
 import logging
@@ -21,14 +17,14 @@ from src.knowledge.embeddings import get_embedding_manager
 logger = logging.getLogger(__name__)
 
 
-def _decompose_claims(llm_provider: Any, text: str) -> list[str]:
+def _decompose_claims(llm_provider: Any, text: str, model: str = "") -> list[str]:
     """使用 LLM 将文本分解为原子级的事实声明。
-    
+
     LLM 调用失败时回退为按句子分割。
     """
     if not text or not text.strip():
         return []
-    
+
     try:
         prompt = (
             "请将以下文本分解为原子级的事实声明（claims），"
@@ -36,11 +32,14 @@ def _decompose_claims(llm_provider: Any, text: str) -> list[str]:
             f"文本：{text}\n\n"
             "事实声明："
         )
-        response = llm_provider.chat(
+        call_kwargs: dict[str, Any] = dict(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=512,
         )
+        if model:
+            call_kwargs["model"] = model
+        response = llm_provider.chat(**call_kwargs)
         claims = [line.strip() for line in response.split('\n') if line.strip()]
         # 过滤掉 LLM 返回中的噪音行，如"文本："或"事实声明："
         claims = [c for c in claims if not c.startswith('文本') and not c.startswith('事实')]
@@ -64,13 +63,14 @@ def _check_support(claim: str, reference_claims: list[str]) -> bool:
     """
     try:
         import jieba
-        claim_tokens = set(jieba.lcut(claim))
+        # 统一转小写，避免 BGE/bge 等大小写差异导致分词结果不同
+        claim_tokens = set(jieba.lcut(claim.lower()))
         meaningful = {t for t in claim_tokens if len(t) > 1}
         if not meaningful:
             return True
-        
+
         for ref in reference_claims:
-            ref_tokens = set(jieba.lcut(ref))
+            ref_tokens = set(jieba.lcut(ref.lower()))
             ref_meaningful = {t for t in ref_tokens if len(t) > 1}
             overlap = meaningful & ref_meaningful
             # 阈值：至少有 30% 的有意义分词重叠
@@ -84,28 +84,6 @@ def _check_support(claim: str, reference_claims: list[str]) -> bool:
         if any(t in ref for t in claim.split() if len(t) > 2):
             return True
     return False
-
-
-def _calculate_f1(answer_claims: list[str], reference_claims: list[str]) -> float:
-    """计算回答声明与参考声明之间的 F1 分数。"""
-    if not answer_claims and not reference_claims:
-        return 1.0
-    if not answer_claims or not reference_claims:
-        return 0.0
-    
-    # 统计回答声明的 TP（真阳性）和 FP（假阳性）
-    tp = sum(1 for c in answer_claims if _check_support(c, reference_claims))
-    fp = len(answer_claims) - tp
-
-    # 统计参考声明中未被覆盖的 FN（假阴性）
-    fn = sum(1 for c in reference_claims if not _check_support(c, answer_claims))
-    
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-    
-    if precision + recall == 0:
-        return 0.0
-    return 2 * precision * recall / (precision + recall)
 
 
 def _semantic_similarity(text1: str, text2: str) -> float:
@@ -125,111 +103,89 @@ def _semantic_similarity(text1: str, text2: str) -> float:
         return 0.0
 
 
-def _compute_ragas_score(f1: float, semantic_sim: float, weight: float = 0.5) -> float:
-    """F1 与语义相似度的加权融合（RAGAS 风格）。"""
-    return round(f1 * weight + semantic_sim * (1 - weight), 4)
-
-
-def _check_numeric_consistency(answer: str, reference: str) -> float:
-    """检查回答中的数值是否与标准答案中的数值一致。
-    
-    从两段文本中提取所有数字，逐对比较。
-    返回惩罚乘数（0.0 = 数值完全不匹配，1.0 = 全部匹配）。
-    """
-    # 提取数字（整数和小数）
-    ans_nums = [float(x) for x in re.findall(r'\d+\.?\d*', answer)]
-    ref_nums = [float(x) for x in re.findall(r'\d+\.?\d*', reference)]
-    
-    if not ref_nums:
-        return 1.0  # 标准答案中没有数字，跳过检查
-    if not ans_nums:
-        return 0.5  # 预期有数字但回答中没找到
-    
-    # 对标准答案中的每个数字，检查回答中是否有匹配
-    matches = 0
-    for rn in ref_nums:
-        for an in ans_nums:
-            if abs(an - rn) < 0.01:  # 精确匹配（允许浮点精度误差）
-                matches += 1
-                break
-    
-    ratio = matches / len(ref_nums)
-    return ratio
-
-
 # ═══════════════════════════════════════════════════
 # Class: RagasFactualCorrectness
 # ═══════════════════════════════════════════════════
 
 class RagasFactualCorrectness(QualityJudge):
-    """RAGAS 风格的答案正确性检查器。
-    
-    将回答与标准答案进行对比，使用：
-    - 声明分解后的 F1 分数
-    - 嵌入模型的语义相似度
-    - 加权融合 → 平滑的 0-1 分
-    
+    """LLM Judge 风格的答案正确性检查器。
+
+    将 AI 回答与用户提供的标准答案进行对比，使用 LLM 做语义判断。
+    替代了旧的 RAGAS（jieba F1 + 语义相似度融合）方案——后者在大小写、
+    同义词、数字差异等场景下频繁误判。
+
     需要通过 kwargs 传入 ground_truth。
     没有 ground_truth 时返回中性分数并跳过校验。
     """
-    
-    def __init__(self, llm_provider: Any, config: dict | None = None, weight: float = 0.5):
+
+    def __init__(self, llm_provider: Any, config: dict | None = None, **kwargs):
         super().__init__(llm_provider, prompt_template_name="", config=config)
-        self.weight = weight
-    
+
     def evaluate(self, query: str, answer: str, context: str | None = None, **kwargs) -> QualityVerdict:
         ground_truth = kwargs.get("ground_truth") or kwargs.get("reference")
-        
+
         if not answer:
             return QualityVerdict(
                 dimension="answer_correctness", passed=True, score=1.0,
-                details="答案为空，跳过评估 || RAGAS-correctness: empty answer"
+                details="答案为空，跳过评估 || LLM-judge: empty answer"
             )
-        
+
         if not ground_truth:
-            # No ground truth available - cannot measure correctness
-            # Return a neutral score with honest description
             return QualityVerdict(
                 dimension="answer_correctness",
                 passed=True,
                 score=0.5,
-                details="当前无标准答案可对比，跳过正确性校验 || RAGAS-correctness: no ground_truth, skipped"
+                details="当前无标准答案可对比，跳过正确性校验 || LLM-judge: no ground_truth, skipped"
             )
-        
+
         try:
-            answer_claims = _decompose_claims(self.llm_provider, answer)
-            ref_claims = _decompose_claims(self.llm_provider, ground_truth)
-            
-            f1 = _calculate_f1(answer_claims, ref_claims)
-            sim = _semantic_similarity(answer, ground_truth)
-            
-            # Numeric consistency check: penalize if numbers don't match
-            num_consistency = _check_numeric_consistency(answer, ground_truth)
-            
-            # Blend: if numeric consistency is low, reduce F1 proportionally
-            adjusted_f1 = f1 * num_consistency
-            
-            final_score = _compute_ragas_score(adjusted_f1, sim, self.weight)
-            
+            prompt = (
+                "请判断以下 AI 回答与标准答案是否表达了相同的意思。"
+                "注意：重点比较关键事实和数据是否一致，措辞不同但意思相同应判为一致。\n\n"
+                f"用户问题：{query}\n\n"
+                f"AI 回答：{answer}\n\n"
+                f"标准答案：{ground_truth}\n\n"
+                "请返回 JSON 格式：\n"
+                '{"passed": true/false, "score": 0.0-1.0, "reasoning": "判断理由"}'
+            )
+
+            result = self._call_judge(prompt)
+
+            # 检查 LLM 调用是否出错（超时、解析失败等）
+            if result.get("_error"):
+                error_msg = result.get("reasoning", "未知错误")
+                logger.warning("Answer correctness Judge 异常: %s", error_msg)
+                # fallback: 语义相似度
+                sim = _semantic_similarity(answer, ground_truth)
+                return QualityVerdict(
+                    dimension="answer_correctness",
+                    passed=sim >= 0.4,
+                    score=round(sim, 4),
+                    details=f"LLM Judge 异常，降级为语义对比（相似度={sim:.0%}) || LLM-judge: fallback semantic (score={sim:.2f})"
+                )
+
+            passed = result.get("passed", False)
+            score = result.get("score", 0.5)
+            reasoning = result.get("reasoning", "")
+
             return QualityVerdict(
                 dimension="answer_correctness",
-                passed=final_score >= 0.5,
-                score=final_score,
+                passed=passed,
+                score=score,
                 details=(
-                    f"答案与标准答案{'一致' if final_score >= 0.5 else '不一致'}"
-                    f"，关键事实匹配度 {f1:.0%} || "
-                    f"RAGAS-correctness: score={final_score:.2f} "
-                    f"(F1={f1:.2f}, sim={sim:.2f}, weight={self.weight})"
+                    f"答案与标准答案{'高度一致' if score >= 0.7 else '部分一致' if score >= 0.5 else '不一致'}"
+                    f" — {reasoning} || "
+                    f"LLM-judge: score={score:.2f}, passed={passed}"
                 )
             )
         except Exception as e:
-            logger.error("RAGAS correctness evaluation failed: %s", e)
+            logger.error("Answer correctness evaluation failed: %s", e)
             sim = _semantic_similarity(answer, ground_truth)
             return QualityVerdict(
                 dimension="answer_correctness",
                 passed=sim >= 0.4,
                 score=round(sim, 4),
-                details=f"语义相似度={sim:.0%}（评估异常，降级为纯语义对比）|| RAGAS-correctness: fallback semantic (score={sim:.2f})"
+                details=f"评估异常，降级为语义对比（相似度={sim:.0%}) || LLM-judge: fallback semantic (score={sim:.2f})"
             )
 
 
@@ -259,9 +215,19 @@ class RagasFaithfulness(QualityJudge):
                 dimension="factuality", passed=True, score=0.5,
                 details="无检索上下文，无法验证忠实度 || RAGAS-faithfulness: no context, skipped"
             )
-        
+
+        # 检测"不知道/未找到"类回答：模型诚实表示无信息，不判为幻觉
+        _IDK_KEYWORDS = ["不知道", "没有找到", "无法找到", "未找到", "未发现",
+                         "无相关信息", "暂未找到", "未能找到", "没有相关的信息"]
+        if any(kw in answer for kw in _IDK_KEYWORDS):
+            return QualityVerdict(
+                dimension="factuality", passed=True, score=0.5,
+                details="回答表示未找到相关信息，跳过忠实度评测 || RAGAS-faithfulness: IDK answer, skipped"
+            )
+
         try:
-            answer_claims = _decompose_claims(self.llm_provider, answer)
+            judge_model = self.config.get("quality_judge_model", "")
+            answer_claims = _decompose_claims(self.llm_provider, answer, model=judge_model)
             if not answer_claims:
                 # 回退到语义相似度
                 sim = _semantic_similarity(answer, context)
