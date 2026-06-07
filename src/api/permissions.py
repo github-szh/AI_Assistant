@@ -13,7 +13,7 @@ ROLE_PERMISSIONS = {
         "chat:send", "chat:view", "chat:delete",
         "knowledge:query",
         "monitoring:view",
-        "quality:view",
+        "quality:view", "quality:eval",
         "system:settings:view", "system:llm:switch",
     ],
 

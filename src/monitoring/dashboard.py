@@ -341,7 +341,7 @@ async function refresh() {
   }
 }
 refresh();
-setInterval(refresh,5000);
+setInterval(refresh,30000);
 </script>
 </body>
 </html>
