@@ -159,18 +159,27 @@ def _expand_to_parents(child_nodes: list, tenant_id: int | None = None) -> list:
 
     if not parents:
         return child_nodes
-    # Build result: preserve child order, deduplicate parents
+    # Build result: preserve child order, deduplicate parents.
+    # Nodes without parent_id (normal chunking) pass through as-is;
+    # nodes with parent_id are expanded to parent context (deduplicated).
     from llama_index.core.schema import TextNode
 
     result = []
     emitted = set()
     for node in child_nodes:
         pid = node.metadata.get("parent_id")
-        if not pid or pid in emitted:
+        # Case 1: no parent_id — keep the original node
+        if not pid:
+            result.append(node)
+            continue
+        # Case 2: parent already emitted — skip (dedup)
+        if pid in emitted:
             continue
         emitted.add(pid)
         data = parents.get(pid)
+        # Case 3: parent not found in DB — fallback to original node
         if not data:
+            result.append(node)
             continue
 
         parent = TextNode(
@@ -318,6 +327,11 @@ class HybridRetriever:
             return []
 
         expanded = _expand_to_parents(fused_nodes, tenant_id=tenant_id)
+
+        # 按 RRF 分数排序后截断，控制 Reranker 候选数以降低延迟
+        if len(expanded) > settings.retrieval_max_rerank_candidates:
+            expanded.sort(key=lambda n: getattr(n, 'score', 0), reverse=True)
+            expanded = expanded[:settings.retrieval_max_rerank_candidates]
 
         _rag_start = time.monotonic()
         if settings.rerank_enabled:

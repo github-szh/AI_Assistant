@@ -22,6 +22,7 @@ goto wait
 
 :start
 echo Starting AI Assistant Backend on http://localhost:8000
+:: 动态查看日志：打开 PowerShell 执行 →  Get-Content data/logs/app.log -Wait
 cd /d "%~dp0"
 uvicorn src.api.main:app --port 8000 --reload --log-level debug
 pause

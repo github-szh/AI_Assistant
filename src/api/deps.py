@@ -89,6 +89,11 @@ class _Pool:
         with self._lock:
             for conn in self._pool:
                 try:
+                    conn.rollback()
+                    conn.autocommit = True
+                except Exception:
+                    pass
+                try:
                     conn.close()
                 except Exception:
                     pass
@@ -147,7 +152,12 @@ def get_pg_connection_sync():
 async def close_pool() -> None:
     global _pool
     if _pool is not None:
-        _pool.close()
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_pool.close), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Pool close timed out after 5s, forcing shutdown")
+        except Exception:
+            pass
         _pool = None
         logger.info("Pool closed")
 

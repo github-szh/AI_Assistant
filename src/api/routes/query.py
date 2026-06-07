@@ -1,10 +1,12 @@
 """POST /query — RAG knowledge base Q&A endpoints."""
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from src.api.deps import get_pg_connection
 from src.api.schemas import QueryRequest, QueryResponse, EvalResponse, VerdictDetail
 from src.api.permissions import require_permission
 from src.knowledge.query_engine import QueryEngine, get_query_engine
@@ -27,6 +29,35 @@ async def query_knowledge(
         doc_ids=req.doc_ids, messages=req.messages,
         tenant_id=user.get("tenant_id"),
     )
+    # 保存问答到会话消息表
+    if req.session_id:
+        try:
+            async with get_pg_connection() as conn:
+                conn.execute(
+                    "INSERT INTO t_session_message (session_id, role, content) VALUES (%s,%s,%s)",
+                    [req.session_id, "user", req.question[:10000]],
+                )
+                answer_text = result.get("answer", "")
+                conn.execute(
+                    "INSERT INTO t_session_message (session_id, role, content) VALUES (%s,%s,%s)",
+                    [req.session_id, "assistant", answer_text[:10000]],
+                )
+                conn.execute(
+                    "UPDATE t_session_info SET updated_at=NOW() WHERE id=%s",
+                    [req.session_id],
+                )
+                conn.commit()
+        except Exception as exc:
+            logger.warning("RAG query persist failed: %s", exc)
+
+        # 自动摘要（best-effort）
+        try:
+            import asyncio as _asyncio
+            from src.utils.summarizer import summarize_session
+            _asyncio.create_task(_asyncio.to_thread(summarize_session, req.session_id))
+        except Exception:
+            pass
+
     return QueryResponse(**result)
 
 
@@ -41,12 +72,49 @@ async def query_knowledge_stream(
     logger.info("RAG stream: '%s' (top_k=%d, tenant=%s)", req.question[:100], req.top_k, user.get("tenant_id"))
 
     async def generate():
+        full_answer = ""
         async for sse_line in engine.query_stream(
             question=req.question, top_k=req.top_k,
             doc_ids=req.doc_ids, messages=req.messages,
             tenant_id=user.get("tenant_id"),
         ):
+            # 从 SSE 事件中收集回答文本
+            if sse_line.startswith("data: "):
+                try:
+                    data = json.loads(sse_line[6:])
+                    if "c" in data:
+                        full_answer += data["c"]
+                except (json.JSONDecodeError, KeyError):
+                    pass
             yield sse_line
+
+        # 流结束后保存问答到会话消息表
+        if req.session_id:
+            try:
+                async with get_pg_connection() as conn:
+                    conn.execute(
+                        "INSERT INTO t_session_message (session_id, role, content) VALUES (%s,%s,%s)",
+                        [req.session_id, "user", req.question[:10000]],
+                    )
+                    conn.execute(
+                        "INSERT INTO t_session_message (session_id, role, content) VALUES (%s,%s,%s)",
+                        [req.session_id, "assistant", full_answer[:10000]],
+                    )
+                    conn.execute(
+                        "UPDATE t_session_info SET updated_at=NOW() WHERE id=%s",
+                        [req.session_id],
+                    )
+                    conn.commit()
+            except Exception as exc:
+                logger.warning("RAG stream persist failed: %s", exc)
+
+            # 自动摘要（best-effort）
+            try:
+                import asyncio as _asyncio
+                from src.utils.summarizer import summarize_session
+                _asyncio.create_task(_asyncio.to_thread(summarize_session, req.session_id))
+            except Exception:
+                pass
 
     return StreamingResponse(
         generate(), media_type="text/event-stream",

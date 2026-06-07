@@ -48,6 +48,8 @@ class DocumentInfo(BaseModel):
     pages: int | None = None
     uploaded_at: str = ""
     summary: str = ""
+    uploaded_by: str = ""
+    chunk_strategy: str = ""
 
 
 class DocumentDetail(DocumentInfo):
@@ -67,6 +69,7 @@ class QueryRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=50)
     messages: list[dict] | None = None  # 最近几轮对话，用于查询改写
     ground_truth: str | None = None  # 标准答案，用于答案正确性校验
+    session_id: str | None = None   # 会话 ID，用于保存问答历史
 
 
 class SourceInfo(BaseModel):

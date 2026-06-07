@@ -72,9 +72,18 @@ async def lifespan(app: FastAPI):
             pass
     threading.Thread(target=_warmup_reranker, daemon=True).start()
     yield
+    # 关闭 reranker 子进程（Windows 上必须主动关闭，否则 reload 时子进程残留）
+    try:
+        from src.knowledge.reranker import get_reranker
+        get_reranker().close()
+    except Exception:
+        pass
     # 关闭连接池，释放所有数据库连接
     from src.api.deps import close_pool
     await close_pool()
+    # 关闭日志文件句柄（Windows 上必须主动释放，否则 reload 时新进程无法打开）
+    from src.observability.logging_config import shutdown_logging
+    shutdown_logging()
 
 
 app = FastAPI(

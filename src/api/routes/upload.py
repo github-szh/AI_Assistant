@@ -147,18 +147,6 @@ async def upload_document(
         if not summary:
             summary = " ".join(p.content for p in parsed)[:200]
 
-        # 权限与多租户：索引文档摘要时传入 tenant_id
-        if summary:
-            try:
-                from src.knowledge.embeddings import get_embedding_manager
-                embed_mgr = get_embedding_manager()
-                summary_emb = embed_mgr.encode_query(summary)
-                from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
-                await asyncio.to_thread(_ensure_summary_collection)
-                await asyncio.to_thread(_insert_summary, doc_id, summary, summary_emb, filename, len(chunks), tenant_id=tenant_id)
-            except Exception:
-                logger.warning("Failed to index document summary", exc_info=True)
-
         # 权限与多租户：入库时传入 tenant_id
         try:
             if chunker.sentence_window:
@@ -182,16 +170,29 @@ async def upload_document(
             logger.warning("Ingestion skipped (vector store unavailable): %s", exc)
 
     # 权限与多租户：保存文档元数据时写入 tenant_id
+    chunk_strategy_val = strategy or settings.chunk_strategy
     with get_pg_connection() as conn2:
         conn2.execute(
             """INSERT INTO t_document
                (doc_id, filename, file_type, file_size, pages, parser_used,
-                chunks_count, summary, md5_hash, user_id, tenant_id)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                chunks_count, summary, md5_hash, user_id, tenant_id, chunk_strategy)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             [doc_id, filename, ext, file_size, page_count, parser_used,
-             len(chunks), summary, file_hash, user["user_id"], tenant_id],
+             len(chunks), summary, file_hash, user["user_id"], tenant_id, chunk_strategy_val],
         )
         conn2.commit()
+
+    # 权限与多租户：t_document 写入成功后再索引文档摘要，避免产生孤儿记录
+    if summary:
+        try:
+            from src.knowledge.embeddings import get_embedding_manager
+            embed_mgr = get_embedding_manager()
+            summary_emb = embed_mgr.encode_query(summary)
+            from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
+            await asyncio.to_thread(_ensure_summary_collection)
+            await asyncio.to_thread(_insert_summary, doc_id, summary, summary_emb, filename, len(chunks), tenant_id=tenant_id)
+        except Exception:
+            logger.warning("Failed to index document summary", exc_info=True)
 
     if parse_error:
         status = "parse_failed"
@@ -358,7 +359,20 @@ async def upload_stream(
                 except Exception as exc:
                     logger.warning("Ingestion skipped: %s", exc)
 
-        # Index document summary with tenant_id
+        # Save metadata to t_document
+        chunk_strategy_val = strategy or settings.chunk_strategy
+        async with get_pg_connection() as conn:
+            conn.execute(
+                """INSERT INTO t_document
+                   (doc_id, filename, file_type, file_size, pages, parser_used,
+                    chunks_count, summary, md5_hash, user_id, tenant_id, chunk_strategy)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                [doc_id, filename, ext, file_size, page_count, parser_used,
+                 len(chunks) if chunks else 0, summary, file_hash, user["user_id"], tenant_id, chunk_strategy_val],
+            )
+            conn.commit()
+
+        # t_document 写入成功后再索引文档摘要，避免产生孤儿记录
         if summary:
             try:
                 from src.knowledge.embeddings import get_embedding_manager
@@ -369,18 +383,6 @@ async def upload_stream(
                 await asyncio.to_thread(_insert_summary, doc_id, summary, summary_emb, filename, len(chunks) if chunks else 0, tenant_id=tenant_id)
             except Exception:
                 logger.warning("Failed to index document summary", exc_info=True)
-
-        # Save metadata to t_document
-        async with get_pg_connection() as conn:
-            conn.execute(
-                """INSERT INTO t_document
-                   (doc_id, filename, file_type, file_size, pages, parser_used,
-                    chunks_count, summary, md5_hash, user_id, tenant_id)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                [doc_id, filename, ext, file_size, page_count, parser_used,
-                 len(chunks) if chunks else 0, summary, file_hash, user["user_id"], tenant_id],
-            )
-            conn.commit()
 
         if parse_error:
             logger.warning("文件 %s 上传失败(stream): %s", filename, parse_error)

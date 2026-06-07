@@ -107,8 +107,9 @@ class Settings(BaseSettings):
     sentence_window_auto_threshold: int = 20  # auto-enable when chunk count >= this value (unless explicit)
 
     # Two-level retrieval (document summary index)
-    summary_search_top_k: int = 3   # Level 1: how many relevant documents to select
+    summary_search_top_k: int = 5   # Level 1: how many relevant documents to select
     two_stage_min_docs: int = 10    # skip Level 1 when KB has fewer docs than this
+    retrieval_max_rerank_candidates: int = 20  # cap candidates before reranker to control latency
 
     # Chat context
     chat_max_rounds: int = 30
@@ -116,7 +117,7 @@ class Settings(BaseSettings):
     chat_page_size: int = 20
 
     # Summarization
-    chat_summarize_trigger: int = 200
+    chat_summarize_trigger: int = 20   # 未总结消息数超过此值触发自动摘要
     chat_summarize_keep_recent: int = 20
 
     # JWT
