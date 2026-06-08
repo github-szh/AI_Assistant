@@ -184,6 +184,9 @@ def _insert_parent_contexts(rows: list[dict]) -> None:
 def _fetch_parent_contexts(parent_ids: list[str], tenant_id: int | None = None) -> dict[str, dict]:
     if not parent_ids:
         return {}
+    if tenant_id is None:
+        logger.warning("tenant_id is None, skipping parent fetch to prevent cross-tenant leak")
+        return {}
     try:
         import psycopg
         conn = psycopg.connect(
@@ -191,16 +194,10 @@ def _fetch_parent_contexts(parent_ids: list[str], tenant_id: int | None = None) 
             dbname=settings.pg_database, user=settings.pg_user,
             password=settings.pg_password, connect_timeout=5,
         )
-        if tenant_id is not None:
-            rows = conn.execute(
-                "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s) AND tenant_id = %s",
-                [parent_ids, tenant_id],
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s)",
-                [parent_ids],
-            ).fetchall()
+        rows = conn.execute(
+            "SELECT parent_id, doc_id, content, filename, chunk_index FROM chunk_contexts WHERE parent_id = ANY(%s) AND tenant_id = %s",
+            [parent_ids, tenant_id],
+        ).fetchall()
         conn.close()
         return {
             r[0]: {"doc_id": r[1], "content": r[2], "filename": r[3], "chunk_index": r[4]}

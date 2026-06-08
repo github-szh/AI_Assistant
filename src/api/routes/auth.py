@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
 import bcrypt
 import jwt
@@ -66,9 +66,21 @@ def decode_jwt(token: str) -> dict:
 
 
 @router.post("/register", response_model=AuthResponse)
-async def register(req: RegisterRequest):
-    if len(req.username) < 2 or len(req.password) < 4:
-        raise HTTPException(400, "用户名至少2位，密码至少4位")
+async def register(req: RegisterRequest, request: Request):
+    # 限流：每 IP 每 60 秒最多 3 次注册
+    from src.storage.cache import RateLimiter
+    limiter = RateLimiter(max_requests=3, window_seconds=60)
+    client_ip = request.client.host if request.client else "unknown"
+    if not limiter.is_allowed(f"register:{client_ip}"):
+        logger.warning("注册限流触发: IP=%s, username=%s", client_ip, req.username)
+        raise HTTPException(429, "注册过于频繁，请稍后再试")
+
+    if len(req.username) < 2 or len(req.password) < 8:
+        raise HTTPException(400, "用户名至少2位，密码至少8位")
+
+    # 邀请制模式：不允许自动创建个人租户
+    if settings.invite_only_registration and not req.tenant_code:
+        raise HTTPException(400, "当前为邀请制注册，请提供租户编码")
 
     pw_hash = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
     conn = _get_pg()
@@ -164,20 +176,60 @@ async def login(req: LoginRequest):
     )
 
 
+def _verify_user(user_id: int) -> dict | None:
+    """查询数据库确认用户/租户状态，结果缓存 30 秒。"""
+    from src.storage.cache import get_memory_cache
+    cache = get_memory_cache()
+    cache_key = f"user_verify:{user_id}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    conn = _get_pg()
+    try:
+        row = conn.execute(
+            """SELECT u.username, r.name AS role, u.tenant_id, t.is_active AS tenant_active
+               FROM t_user u
+               JOIN t_role r ON u.role_id = r.id
+               LEFT JOIN t_tenant t ON u.tenant_id = t.id
+               WHERE u.id = %s AND u.is_active = TRUE""",
+            [user_id],
+        ).fetchone()
+        if not row:
+            return None
+        if row[3] is not None and not row[3]:
+            return None
+        result = {"username": row[0], "role": row[1], "tenant_id": row[2]}
+        cache.set(cache_key, result, ttl=30)
+        return result
+    except Exception as exc:
+        logger.warning("用户状态校验失败: %s", exc)
+        return None
+    finally:
+        conn.close()
+
+
 def get_current_user(authorization: str | None = Header(None)) -> dict:
-    """Dependency: extract user from JWT Bearer token."""
-    # 权限与多租户：返回 role 和 tenant_id
+    """Dependency: extract user from JWT Bearer token, verify against DB."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "未提供有效的认证令牌")
     try:
         payload = decode_jwt(authorization[7:])
+        user_id = payload["user_id"]
+
+        info = _verify_user(user_id)
+        if info is None:
+            raise HTTPException(401, "用户不存在或已被禁用")
+
         return {
-            "user_id": payload["user_id"],
-            "username": payload["username"],
-            "role": payload.get("role", "viewer"),
-            "tenant_id": payload.get("tenant_id"),
+            "user_id": user_id,
+            "username": info["username"],
+            "role": info["role"],
+            "tenant_id": info["tenant_id"],
         }
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "认证已过期，请重新登录")
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(401, "认证无效")

@@ -130,6 +130,9 @@ class Settings(BaseSettings):
     app_port: int = 8000
     log_level: str = "DEBUG"
 
+    # Security
+    invite_only_registration: bool = False
+
     # Paths
     data_dir: str = "data"
     prompts_dir: str = "prompts"

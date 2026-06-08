@@ -4,12 +4,18 @@
 首次调用时从数据库加载并缓存到内存。
 """
 
+import threading
+import time
+
 from fastapi import HTTPException, Depends
 from src.api.routes.auth import get_current_user
 from src.config import settings
 
 # 内存缓存：role_name → [permission_code, ...]
 _ROLE_PERMISSIONS_CACHE: dict[str, list[str]] | None = None
+_ROLE_PERMISSIONS_LOADED_AT: float = 0
+_CACHE_TTL = 60  # 缓存有效期秒数
+_CACHE_LOCK = threading.Lock()
 
 
 def _load_role_permissions() -> dict[str, list[str]]:
@@ -44,9 +50,13 @@ def _load_role_permissions() -> dict[str, list[str]]:
 
 
 def _get_permissions() -> dict[str, list[str]]:
-    global _ROLE_PERMISSIONS_CACHE
-    if _ROLE_PERMISSIONS_CACHE is None:
-        _ROLE_PERMISSIONS_CACHE = _load_role_permissions()
+    global _ROLE_PERMISSIONS_CACHE, _ROLE_PERMISSIONS_LOADED_AT
+    now = time.time()
+    if _ROLE_PERMISSIONS_CACHE is None or (now - _ROLE_PERMISSIONS_LOADED_AT) > _CACHE_TTL:
+        with _CACHE_LOCK:
+            if _ROLE_PERMISSIONS_CACHE is None or (now - _ROLE_PERMISSIONS_LOADED_AT) > _CACHE_TTL:
+                _ROLE_PERMISSIONS_CACHE = _load_role_permissions()
+                _ROLE_PERMISSIONS_LOADED_AT = now
     return _ROLE_PERMISSIONS_CACHE
 
 

@@ -33,7 +33,7 @@ async def get_document(doc_id: str, user: dict = Depends(require_permission("doc
         raise HTTPException(503, "数据库暂不可用，请稍后重试")
     for d in docs:
         if d.doc_id == doc_id:
-            chunks = _get_chunks(doc_id)
+            chunks = _get_chunks(doc_id, tenant_id=user.get("tenant_id"))
             return DocumentDetail(
                 doc_id=d.doc_id, filename=d.filename, file_type=d.file_type,
                 status=d.status, parser_used=d.parser_used,
@@ -65,11 +65,12 @@ def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
             FROM t_document td
             LEFT JOIN data_documents dd
                 ON COALESCE(dd.metadata_->>'source', dd.metadata_->>'doc_id') = td.doc_id
+                AND dd.metadata_->>'tenant_id' = %s
             WHERE td.tenant_id = %s
             GROUP BY td.doc_id, td.filename, td.file_type, td.parser_used,
                      td.chunks_count, td.file_size, td.uploaded_at, td.pages, td.summary
             ORDER BY td.uploaded_at DESC
-        """, [tenant_id]).fetchall()
+        """, [str(tenant_id) if tenant_id else None, tenant_id]).fetchall()
     except Exception as exc:
         logger.warning("_query_pg_documents failed: %s", exc)
         return None
@@ -106,14 +107,16 @@ def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
     return docs
 
 
-def _get_chunks(doc_id: str) -> list[str]:
+def _get_chunks(doc_id: str, tenant_id: int | None = None) -> list[str]:
     conn = None
     try:
         conn = get_pg_connection()
-        rows = conn.execute(
-            "SELECT text FROM data_documents WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id')=%s ORDER BY id",
-            [doc_id],
-        ).fetchall()
+        sql = "SELECT text FROM data_documents WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id')=%s"
+        params = [doc_id]
+        if tenant_id is not None:
+            sql += " AND metadata_->>'tenant_id' = %s"
+            params.append(str(tenant_id))
+        rows = conn.execute(sql, params).fetchall()
         return [r[0][:500] for r in rows]
     except Exception as exc:
         logger.warning("获取文档片段失败: %s → %s", doc_id, exc)
