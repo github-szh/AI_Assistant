@@ -26,6 +26,20 @@ _VECTOR_STORE_DOWN_MSG = (
     "运行: pip install llama-index-vector-stores-postgres chromadb"
 )
 
+# LLM 判断检索不相关时的典型回答模式，命中则清空来源避免"没找到+有来源"矛盾
+_NO_ANSWER_MARKERS = [
+    "知识库中没有",
+    "知识库中暂无",
+    "知识库中未",
+    "知识库暂未",
+    "知识库尚无",
+    "知识库不包含",
+    "知识库未收录",
+    "资料库中没有",
+    "请先上传相关文档",
+    "请上传相关文档",
+]
+
 
 class QueryEngine:
     """End-to-end RAG query engine."""
@@ -274,6 +288,10 @@ class QueryEngine:
         )
         response = {"answer": answer, "sources": result["sources"]}
 
+        # 检索召回但 LLM 判断不相关时，清空来源避免"没找到+有来源"矛盾
+        if any(m in answer for m in _NO_ANSWER_MARKERS):
+            response["sources"] = []
+
         # ── 写入缓存 ──────────────────────────────────────
         # TTL=300 秒（5分钟），之后重新检索生成
         cache.set(key, response, ttl=300)
@@ -333,19 +351,18 @@ class QueryEngine:
             yield f"data: {json.dumps({'step': 'not_found', 'msg': '知识库中没有找到相关信息。请先上传相关文档。', 'confidence': confidence})}\n\n"
             return
 
-        # Push retrieval steps → sources → confidence so frontend can show the pipeline
+        # Push retrieval steps so frontend can show the pipeline
         steps = result.get("steps", [])
         if steps:
             yield f"data: {json.dumps({'steps': steps})}\n\n"
         confidence = result.get("confidence", "medium")
-        yield f"data: {json.dumps({'status': 'found'})}\n\n"
-        yield f"data: {json.dumps({'sources': [s.model_dump() for s in result['sources']], 'confidence': confidence})}\n\n"
+        yield f"data: {json.dumps({'status': 'found', 'confidence': confidence})}\n\n"
 
         # Stream LLM answer token by token
         prompt = self._build_prompt(question, result["context"])
         llm = get_llm()
 
-        # 收集流式回答 chunk，用于日志记录
+        # 收集流式回答 chunk，用于日志记录和兜底检测
         _stream_chunks: list[str] = []
         for chunk in llm.chat_stream(
             messages=[{"role": "user", "content": prompt}],
@@ -355,11 +372,19 @@ class QueryEngine:
             _stream_chunks.append(chunk)
             yield f"data: {json.dumps({'c': chunk})}\n\n"
 
+        # LLM 完成后判断是否"没找到"再来决定是否发送来源
+        full_answer = "".join(_stream_chunks) if _stream_chunks else ""
+        if any(m in full_answer for m in _NO_ANSWER_MARKERS):
+            sources = []
+        else:
+            sources = [s.model_dump() for s in result["sources"]]
+        yield f"data: {json.dumps({'sources': sources, 'confidence': confidence})}\n\n"
+
         # ── 流式结束标记 ─────────────────────────────────────
         yield f"data: {json.dumps({'done': True})}\n\n"
         logger.info("RAG_QUERY_STREAM %s", json.dumps({
             "question": question,
-            "answer": "".join(_stream_chunks) if _stream_chunks else "",
+            "answer": full_answer,
             "sources": [{"filename": s.filename, "score": s.score, "snippet": s.snippet[:200]} for s in result["sources"]],
         }, ensure_ascii=False))
 

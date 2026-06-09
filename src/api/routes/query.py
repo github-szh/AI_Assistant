@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 
 from src.api.deps import get_pg_connection
 from src.api.schemas import QueryRequest, QueryResponse, EvalResponse, VerdictDetail
-from src.api.permissions import require_permission
+from src.api.permissions import require_permission, get_effective_tenant_id
 from src.knowledge.query_engine import QueryEngine, get_query_engine
 
 router = APIRouter(prefix="/query", tags=["query"])
@@ -27,7 +27,7 @@ async def query_knowledge(
     result = await engine.query(
         question=req.question, top_k=req.top_k,
         doc_ids=req.doc_ids, messages=req.messages,
-        tenant_id=user.get("tenant_id"),
+        tenant_id=get_effective_tenant_id(user),
     )
     # 保存问答到会话消息表
     if req.session_id:
@@ -76,7 +76,7 @@ async def query_knowledge_stream(
         async for sse_line in engine.query_stream(
             question=req.question, top_k=req.top_k,
             doc_ids=req.doc_ids, messages=req.messages,
-            tenant_id=user.get("tenant_id"),
+            tenant_id=get_effective_tenant_id(user),
         ):
             # 从 SSE 事件中收集回答文本
             if sse_line.startswith("data: "):
@@ -135,7 +135,7 @@ async def query_knowledge_eval(
     eval_result = await engine.query_eval(
         question=req.question, top_k=req.top_k,
         doc_ids=req.doc_ids, messages=req.messages,
-        tenant_id=user.get("tenant_id"),
+        tenant_id=get_effective_tenant_id(user),
     )
 
     # 2. Run quality guard if available

@@ -53,6 +53,11 @@ def require_permission(permission: str):
     return permission_dependency
 
 
+def get_effective_tenant_id(user: dict) -> int | None:
+    """权限与多租户：SuperAdmin 跨所有租户（None=不过滤），其他角色按自身 tenant_id 隔离。"""
+    return None if user.get("role") == "super_admin" else user.get("tenant_id")
+
+
 def can_manage_tenant(user: dict, target_tenant_id: int) -> bool:
     """权限与多租户：判断用户是否有权操作指定租户的数据"""
     role = user.get("role", "viewer")

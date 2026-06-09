@@ -56,14 +56,17 @@ async def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
                     SELECT td.doc_id, td.filename, td.file_type, td.parser_used,
                            td.chunks_count, td.file_size, td.uploaded_at, td.pages,
                            td.summary, td.chunk_strategy, count(dd.id) as vector_chunks,
-                           COALESCE(u.display_name, u.username) as uploaded_by
+                           COALESCE(u.display_name, u.username) as uploaded_by,
+                           tn.name as tenant_name
                     FROM t_document td
                     LEFT JOIN data_documents dd
                         ON COALESCE(dd.metadata_->>'source', dd.metadata_->>'doc_id') = td.doc_id
                     LEFT JOIN t_user u ON td.user_id = u.id
+                    LEFT JOIN t_tenant tn ON td.tenant_id = tn.id
                     GROUP BY td.doc_id, td.filename, td.file_type, td.parser_used,
                              td.chunks_count, td.file_size, td.uploaded_at, td.pages,
-                             td.summary, td.chunk_strategy, u.display_name, u.username
+                             td.summary, td.chunk_strategy, u.display_name, u.username,
+                             tn.name
                     ORDER BY td.uploaded_at DESC
                 """).fetchall()
             else:
@@ -71,15 +74,18 @@ async def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
                     SELECT td.doc_id, td.filename, td.file_type, td.parser_used,
                            td.chunks_count, td.file_size, td.uploaded_at, td.pages,
                            td.summary, td.chunk_strategy, count(dd.id) as vector_chunks,
-                           COALESCE(u.display_name, u.username) as uploaded_by
+                           COALESCE(u.display_name, u.username) as uploaded_by,
+                           tn.name as tenant_name
                     FROM t_document td
                     LEFT JOIN data_documents dd
                         ON COALESCE(dd.metadata_->>'source', dd.metadata_->>'doc_id') = td.doc_id
                     LEFT JOIN t_user u ON td.user_id = u.id
+                    LEFT JOIN t_tenant tn ON td.tenant_id = tn.id
                     WHERE td.tenant_id = %s
                     GROUP BY td.doc_id, td.filename, td.file_type, td.parser_used,
                              td.chunks_count, td.file_size, td.uploaded_at, td.pages,
-                             td.summary, td.chunk_strategy, u.display_name, u.username
+                             td.summary, td.chunk_strategy, u.display_name, u.username,
+                             tn.name
                     ORDER BY td.uploaded_at DESC
                 """, [tenant_id]).fetchall()
     except Exception as exc:
@@ -99,6 +105,7 @@ async def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
         summary = r[8] or ""
         chunk_strategy = r[9] or ""
         uploaded_by = r[11] or ""
+        tenant_name = r[12] or ""
 
         if chunks > 0:
             status = "indexed"
@@ -112,7 +119,7 @@ async def _query_pg_documents(user: dict) -> list[DocumentInfo] | None:
             status=status, parser_used=parser,
             chunks_count=chunks, file_size=_fmt_size(size_raw) if size_raw else "",
             pages=pages, uploaded_at=uploaded_raw.isoformat() if uploaded_raw else "",
-            summary=summary[:300], uploaded_by=uploaded_by, chunk_strategy=chunk_strategy,
+            summary=summary[:300], uploaded_by=uploaded_by, tenant_name=tenant_name, chunk_strategy=chunk_strategy,
         ))
     return docs
 

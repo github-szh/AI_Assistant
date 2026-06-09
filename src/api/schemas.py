@@ -49,6 +49,7 @@ class DocumentInfo(BaseModel):
     uploaded_at: str = ""
     summary: str = ""
     uploaded_by: str = ""
+    tenant_name: str = ""
     chunk_strategy: str = ""
 
 
