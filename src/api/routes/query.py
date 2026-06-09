@@ -162,6 +162,9 @@ async def query_knowledge_eval(
                 # 没有标准答案时跳过 answer_correctness 维度（没有可对比的基准）
                 if dim == "answer_correctness" and not req.ground_truth:
                     continue
+                # 检索结果不足2条时跳过检索质量维度（统计指标无意义）
+                if dim == "retrieval_quality" and len(eval_result["sources"]) < 2:
+                    continue
                 quality_dict[dim] = VerdictDetail(
                     dimension=dim,
                     passed=v.passed,

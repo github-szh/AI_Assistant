@@ -10,6 +10,7 @@ Reciprocal Rank Fusion.
 """
 
 import logging
+import math
 import time
 from functools import lru_cache
 
@@ -375,7 +376,7 @@ class HybridRetriever:
                 if s_max > s_min:
                     object.__setattr__(n, 'score', (s - s_min) / (s_max - s_min))
                 else:
-                    object.__setattr__(n, 'score', 0.5)  # 单条结果，中性分
+                    object.__setattr__(n, 'score', round(1 / (1 + math.exp(-s)), 4))
                 object.__setattr__(n, '_reranked', True)
 
         logger.debug("Reranker: %d → %d nodes", len(expanded), len(reranked_nodes))
