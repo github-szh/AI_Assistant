@@ -221,12 +221,19 @@ class QueryEngine:
 
         elapsed = time.time() - t_start
 
-        if top_score >= 0.70:
-            confidence = "high"
-        elif top_score >= 0.50 or deep_search_used:
-            confidence = "medium"
+        if deep_search_used:
+            if top_score >= settings.confidence_high_threshold:
+                confidence = "high"
+            elif top_score >= settings.confidence_medium_threshold:
+                confidence = "medium"
+            else:
+                confidence = "low"
         else:
-            confidence = "low"
+            # 快路径：已经过 stage1 门槛判定够好，至少 medium
+            if top_score >= settings.confidence_high_threshold:
+                confidence = "high"
+            else:
+                confidence = "medium"
 
         timing_parts = []
         if t_l1 > 0:
@@ -241,8 +248,8 @@ class QueryEngine:
         logger.info("检索完成: %d条来源, 置信度=%s, 总耗时 %.1fs (%s)",
                     len(sources), confidence, elapsed, timing_str)
 
-        if confidence == "low" and top_score < 0.40:
-            logger.info("置信度过低(%.3f<0.40)，触发 LLM 兜底", top_score)
+        if confidence == "low" and top_score < settings.confidence_fallback_threshold:
+            logger.info("置信度过低(%.3f<%.2f)，触发 LLM 兜底", top_score, settings.confidence_fallback_threshold)
             return {"nodes": [], "sources": [], "context": "", "confidence": "low"}
 
         return {

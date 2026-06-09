@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     rerank_min_score: float = 0.0  # raw logit threshold (BGE: >0 = relevant), applied pre-normalization
     rerank_enabled: bool = True  # toggle reranker on/off
 
+    # 置信度阈值（检索完成后对分数进行分级，决定是否保留结果还是纯 LLM 兜底）
+    confidence_high_threshold: float = 0.70     # >= 此值 → high
+    confidence_medium_threshold: float = 0.50   # >= 此值 → medium（仅对深路径 BGE 精排适用；快路径至少 medium）
+    confidence_fallback_threshold: float = 0.15  # < 此值 + low → 丢弃所有结果，纯 LLM 兜底
+
     # Quality Guard 配置
     quality_guard_enabled: bool = False
 
