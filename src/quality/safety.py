@@ -116,11 +116,14 @@ class SafetyChecker(QualityJudge):
                 details: 详细说明/违规原因
         """
         # ════════════════════════════════════════════════
-        # 阶段1：关键词预过滤（快速路径）
+        # 阶段1：关键词预过滤（已禁用）
+        # 知识库问答场景中法律/制度文档必然包含"暴力""威胁"等词汇，
+        # 关键词匹配无法区分"禁止X"和"我要X"，误杀率过高。
+        # 直接走阶段2 LLM 语义评判。
         # ════════════════════════════════════════════════
-        keyword_matches = self.keyword_filter.prefilter(f"{query}\n{answer}")
-        if keyword_matches:
-            return self._build_keyword_verdict(keyword_matches)
+        # keyword_matches = self.keyword_filter.prefilter(f"{query}\n{answer}")
+        # if keyword_matches:
+        #     return self._build_keyword_verdict(keyword_matches)
 
         # ════════════════════════════════════════════════
         # 阶段2：LLM 语义评判（慢速路径）

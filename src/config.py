@@ -68,8 +68,13 @@ class Settings(BaseSettings):
     rerank_min_score: float = 0.0  # raw logit threshold (BGE: >0 = relevant), applied pre-normalization
     rerank_enabled: bool = True  # toggle reranker on/off
 
+    # 置信度阈值（检索完成后对分数进行分级，决定是否保留结果还是纯 LLM 兜底）
+    confidence_high_threshold: float = 0.70     # >= 此值 → high
+    confidence_medium_threshold: float = 0.50   # >= 此值 → medium（仅对深路径 BGE 精排适用；快路径至少 medium）
+    confidence_fallback_threshold: float = 0.15  # < 此值 + low → 丢弃所有结果，纯 LLM 兜底
+
     # Quality Guard 配置
-    quality_guard_enabled: bool = True
+    quality_guard_enabled: bool = False
 
     # Judge 模型配置（交叉评判——与生成模型不同，避免自我增强偏差）
     quality_judge_provider: str = ""   # 空字符串表示跟随 llm_provider
@@ -107,8 +112,9 @@ class Settings(BaseSettings):
     sentence_window_auto_threshold: int = 20  # auto-enable when chunk count >= this value (unless explicit)
 
     # Two-level retrieval (document summary index)
-    summary_search_top_k: int = 3   # Level 1: how many relevant documents to select
+    summary_search_top_k: int = 5   # Level 1: how many relevant documents to select
     two_stage_min_docs: int = 10    # skip Level 1 when KB has fewer docs than this
+    retrieval_max_rerank_candidates: int = 20  # cap candidates before reranker to control latency
 
     # Chat context
     chat_max_rounds: int = 30
@@ -116,7 +122,7 @@ class Settings(BaseSettings):
     chat_page_size: int = 20
 
     # Summarization
-    chat_summarize_trigger: int = 200
+    chat_summarize_trigger: int = 20   # 未总结消息数超过此值触发自动摘要
     chat_summarize_keep_recent: int = 20
 
     # JWT

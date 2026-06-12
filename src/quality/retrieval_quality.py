@@ -33,7 +33,7 @@ class RetrievalQualityChecker:
     # 默认边界线阈值：低于此值的平均分虽然 passed=True 但标记为 borderline
     _BORDERLINE_THRESHOLD: float = 0.5
     # 失败阈值：平均分低于此值判定为 passed=False
-    _FAIL_THRESHOLD: float = 0.3
+    _FAIL_THRESHOLD: float = 0.1  # BGE 归一化后最低分恒为 0.0，阈值不宜过高
     # 阈值通过率计算中使用的相关度基线
     _RELEVANCE_BASELINE: float = 0.3
 

@@ -17,45 +17,59 @@ logger = logging.getLogger(__name__)
 @router.delete("/{doc_id}", response_model=DeleteDocumentResponse)
 async def delete_document(doc_id: str, user: dict = Depends(require_permission("document:delete"))):
     """Delete a document from pgvector, t_document, and local filesystem."""
-    # 权限与多租户：校验租户所有权
+    # 权限与多租户：super_admin 跳过租户过滤（NULL = NULL 在 SQL 中永远为 false）
+    is_super = user.get("role") == "super_admin"
     tenant_id = user.get("tenant_id")
-    conn = get_pg_connection()
-    try:
-        own = conn.execute(
-            "SELECT 1 FROM t_document WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        ).fetchone()
+    async with get_pg_connection() as conn:
+        if is_super:
+            own = conn.execute(
+                "SELECT 1 FROM t_document WHERE doc_id = %s", [doc_id],
+            ).fetchone()
+        else:
+            own = conn.execute(
+                "SELECT 1 FROM t_document WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            ).fetchone()
         if not own:
-            conn.close()
             raise HTTPException(404, f"文档 {doc_id} 不存在或无权操作")
 
-        deleted_db = conn.execute(
-            """DELETE FROM data_documents
-               WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s
-               AND metadata_->>'tenant_id' = %s""",
-            [doc_id, str(tenant_id)],
-        ).rowcount
-        deleted_td = conn.execute(
-            "DELETE FROM t_document WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        ).rowcount
-        conn.execute(
-            "DELETE FROM doc_summaries WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        )
-        conn.execute(
-            "DELETE FROM chunk_contexts WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        )
+        if is_super:
+            deleted_db = conn.execute(
+                "DELETE FROM data_documents WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s",
+                [doc_id],
+            ).rowcount
+            deleted_td = conn.execute(
+                "DELETE FROM t_document WHERE doc_id = %s", [doc_id],
+            ).rowcount
+            conn.execute("DELETE FROM doc_summaries WHERE doc_id = %s", [doc_id])
+            conn.execute("DELETE FROM chunk_contexts WHERE doc_id = %s", [doc_id])
+        else:
+            deleted_db = conn.execute(
+                """DELETE FROM data_documents
+                   WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s
+                   AND metadata_->>'tenant_id' = %s""",
+                [doc_id, str(tenant_id)],
+            ).rowcount
+            deleted_td = conn.execute(
+                "DELETE FROM t_document WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            ).rowcount
+            conn.execute(
+                "DELETE FROM doc_summaries WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            )
+            conn.execute(
+                "DELETE FROM chunk_contexts WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            )
         conn.commit()
-    finally:
-        conn.close()
 
     deleted_fs = _delete_from_filesystem(doc_id)
 
     if not deleted_db and not deleted_td and not deleted_fs:
         raise HTTPException(404, f"文档 {doc_id} 不存在")
 
+    logger.info("文档 %s 已删除 (向量=%d, 元数据=%d, 本地=%s)", doc_id, deleted_db, deleted_td, "是" if deleted_fs else "否")
     return DeleteDocumentResponse(
         doc_id=doc_id,
         deleted=True,

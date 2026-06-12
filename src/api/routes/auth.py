@@ -10,6 +10,7 @@ import bcrypt
 import jwt
 
 from src.config import settings
+from src.api.deps import get_pg_connection
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
@@ -38,15 +39,6 @@ class AuthResponse(BaseModel):
     role: str = "viewer"  # 权限与多租户：返回角色
     tenant_id: int | None = None  # 权限与多租户：返回租户ID
     tenant_name: str = ""  # 权限与多租户：返回租户名称
-
-
-def _get_pg():
-    import psycopg
-    return psycopg.connect(
-        host=settings.pg_host, port=settings.pg_port,
-        dbname=settings.pg_database, user=settings.pg_user,
-        password=settings.pg_password, connect_timeout=5,
-    )
 
 
 def create_jwt(user_id: int, username: str, role: str = "viewer", tenant_id: int | None = None) -> str:
@@ -83,9 +75,8 @@ async def register(req: RegisterRequest, request: Request):
         raise HTTPException(400, "当前为邀请制注册，请提供租户编码")
 
     pw_hash = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
-    conn = _get_pg()
 
-    try:
+    async with get_pg_connection() as conn:
         # 权限与多租户：注册时绑定租户
         tenant_id = None
         tenant_name = ""
@@ -97,7 +88,6 @@ async def register(req: RegisterRequest, request: Request):
                 [req.tenant_code],
             ).fetchone()
             if not row:
-                conn.close()
                 raise HTTPException(404, "租户不存在或已禁用")
             tenant_id = row[0]
             tenant_name = row[1]
@@ -117,21 +107,21 @@ async def register(req: RegisterRequest, request: Request):
             tenant_name = row[1]
 
         # 注册用户，默认角色为 viewer
-        row = conn.execute(
-            """INSERT INTO t_user (username, password_hash, display_name, role_id, tenant_id)
-               VALUES (%s, %s, %s, (SELECT id FROM t_role WHERE name = 'viewer'), %s) RETURNING id""",
-            [req.username, pw_hash, req.display_name or req.username, tenant_id],
-        ).fetchone()
-        conn.commit()
-        user_id = row[0]
-    except Exception as e:
-        conn.close()
-        if "unique" in str(e).lower():
-            raise HTTPException(409, "用户名已存在")
-        raise HTTPException(500, "注册失败")
+        try:
+            row = conn.execute(
+                """INSERT INTO t_user (username, password_hash, display_name, role, tenant_id)
+                   VALUES (%s, %s, %s, 'viewer', %s) RETURNING id""",
+                [req.username, pw_hash, req.display_name or req.username, tenant_id],
+            ).fetchone()
+            conn.commit()
+            user_id = row[0]
+        except Exception as e:
+            if "unique" in str(e).lower():
+                raise HTTPException(409, "用户名已存在")
+            raise HTTPException(500, "注册失败")
 
-    conn.close()
     token = create_jwt(user_id, req.username, "viewer", tenant_id)
+    logger.info("用户 %s 注册成功 (tenant=%s)", req.username, tenant_name)
     return AuthResponse(
         token=token, user_id=user_id, username=req.username,
         display_name=req.display_name or req.username,
@@ -141,18 +131,15 @@ async def register(req: RegisterRequest, request: Request):
 
 @router.post("/login", response_model=AuthResponse)
 async def login(req: LoginRequest):
-    conn = _get_pg()
-    # 先查出用户（含非活跃），区分错误原因
-    user_row = conn.execute(
-        """SELECT u.id, u.username, u.password_hash, u.display_name,
-                  r.name AS role, u.tenant_id, u.is_active, t.name, t.is_active AS tenant_active
-           FROM t_user u
-           LEFT JOIN t_role r ON u.role_id = r.id
-           LEFT JOIN t_tenant t ON u.tenant_id = t.id
-           WHERE u.username = %s""",
-        [req.username],
-    ).fetchone()
-    conn.close()
+    async with get_pg_connection() as conn:
+        user_row = conn.execute(
+            """SELECT u.id, u.username, u.password_hash, u.display_name,
+                      u.role, u.tenant_id, u.is_active, t.name, t.is_active AS tenant_active
+               FROM t_user u
+               LEFT JOIN t_tenant t ON u.tenant_id = t.id
+               WHERE u.username = %s""",
+            [req.username],
+        ).fetchone()
 
     if not user_row:
         raise HTTPException(401, "用户名或密码错误")
@@ -169,6 +156,7 @@ async def login(req: LoginRequest):
         raise HTTPException(401, "所属租户已被禁用，请联系管理员")
 
     token = create_jwt(user_row[0], username, role, tenant_id)
+    logger.info("用户 %s 登录成功 (role=%s, tenant=%s)", username, role, tenant_name or "无")
     return AuthResponse(
         token=token, user_id=user_row[0], username=username,
         display_name=display_name or username,

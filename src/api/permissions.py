@@ -17,6 +17,34 @@ _ROLE_PERMISSIONS_LOADED_AT: float = 0
 _CACHE_TTL = 60  # 缓存有效期秒数
 _CACHE_LOCK = threading.Lock()
 
+# 权限与多租户：角色-权限映射表
+ROLE_PERMISSIONS = {
+    "super_admin": ["*"],
+
+    "tenant_admin": [
+        "tenant:view", "tenant:manage", "tenant:users:manage",
+        "document:upload", "document:view", "document:delete", "document:download",
+        "chat:send", "chat:view", "chat:delete",
+        "knowledge:query",
+        "monitoring:view",
+        "quality:view", "quality:eval",
+        "system:settings:view", "system:llm:switch",
+    ],
+
+    "editor": [
+        "document:upload", "document:view", "document:delete", "document:download",
+        "chat:send", "chat:view", "chat:delete",
+        "knowledge:query",
+        "quality:view",
+    ],
+
+    "viewer": [
+        "chat:send", "chat:view", "chat:delete",
+        "knowledge:query",
+        "quality:view",
+    ],
+}
+
 
 def _load_role_permissions() -> dict[str, list[str]]:
     """从数据库加载角色-权限映射"""
@@ -58,6 +86,7 @@ def _get_permissions() -> dict[str, list[str]]:
                 _ROLE_PERMISSIONS_CACHE = _load_role_permissions()
                 _ROLE_PERMISSIONS_LOADED_AT = now
     return _ROLE_PERMISSIONS_CACHE
+    
 
 
 def check_permission(role: str, required: str) -> bool:
@@ -79,6 +108,11 @@ def require_permission(permission: str):
             raise HTTPException(403, f"权限不足，需要 {permission} 权限")
         return user
     return permission_dependency
+
+
+def get_effective_tenant_id(user: dict) -> int | None:
+    """权限与多租户：SuperAdmin 跨所有租户（None=不过滤），其他角色按自身 tenant_id 隔离。"""
+    return None if user.get("role") == "super_admin" else user.get("tenant_id")
 
 
 def can_manage_tenant(user: dict, target_tenant_id: int) -> bool:

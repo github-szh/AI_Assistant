@@ -9,6 +9,8 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends
+
+from src.api.permissions import require_permission
 from fastapi.responses import HTMLResponse
 
 from src.api.permissions import require_permission
@@ -69,7 +71,7 @@ async def phoenix_info(user: dict = Depends(require_permission("quality:view")))
 
 
 @router.get("/monitoring")
-async def monitoring_json(user: dict = Depends(require_permission("quality:view"))):
+async def monitoring_json(user: dict = Depends(require_permission("monitoring:view"))):
     now = time.time()
 
     # System resources (read directly via psutil, bypass Prometheus Gauge corruption)
@@ -341,7 +343,7 @@ async function refresh() {
   }
 }
 refresh();
-setInterval(refresh,5000);
+setInterval(refresh,30000);
 </script>
 </body>
 </html>

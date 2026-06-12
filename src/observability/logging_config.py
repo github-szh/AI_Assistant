@@ -32,6 +32,9 @@ def setup_logging() -> None:
     fh.setFormatter(formatter)
     fh.setLevel(logging.DEBUG)   # file gets everything
     root.addHandler(fh)
+    # 保存引用，shutdown 时主动关闭释放 Windows 文件句柄
+    global _file_handler
+    _file_handler = fh
 
     # Quiet noisy third-party
     for name in ("httpx", "httpcore", "urllib3", "openai", "botocore", "multiprocess"):
@@ -47,3 +50,20 @@ def setup_logging() -> None:
         ulog.propagate = False
 
     root.info("Logging to %s", LOG_FILE)
+
+
+_file_handler: RotatingFileHandler | None = None
+
+
+def shutdown_logging() -> None:
+    """Shutdown: close file handler to release Windows file handle before process exits."""
+    global _file_handler
+    if _file_handler is not None:
+        root = logging.getLogger()
+        root.info("Shutting down logging")
+        for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+            ulog = logging.getLogger(name)
+            ulog.removeHandler(_file_handler)
+        root.removeHandler(_file_handler)
+        _file_handler.close()
+        _file_handler = None

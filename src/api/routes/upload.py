@@ -1,5 +1,6 @@
 """POST /upload — upload and parse documents, store metadata in t_document table."""
 
+import asyncio
 import hashlib
 import logging
 import uuid
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Form, Query, UploadFile, File, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from src.api.deps import get_document_loader, get_pg_connection
+from src.api.deps import get_document_loader, get_pg_connection, get_pg_connection_sync
 from src.api.schemas import UploadResponse
 from src.api.permissions import require_permission
 from src.config import settings
@@ -31,8 +32,7 @@ async def check_duplicate(req: CheckRequest, user: dict = Depends(require_permis
     """Check if a document with the same name and size already exists."""
     # 权限与多租户：按租户检查重复
     tenant_id = user.get("tenant_id")
-    conn = get_pg_connection()
-    try:
+    async with get_pg_connection() as conn:
         row = conn.execute(
             "SELECT doc_id, filename FROM t_document WHERE filename = %s AND file_size = %s AND tenant_id = %s",
             [req.filename, req.file_size, tenant_id],
@@ -40,8 +40,6 @@ async def check_duplicate(req: CheckRequest, user: dict = Depends(require_permis
         if row:
             return {"exists": True, "doc_id": row[0], "filename": row[1]}
         return {"exists": False, "doc_id": None, "filename": None}
-    finally:
-        conn.close()
 
 
 @router.post("", response_model=UploadResponse)
@@ -70,14 +68,11 @@ async def upload_document(
     ext = Path(filename).suffix
 
     # MD5 dedup — within tenant scope
-    conn = get_pg_connection()
-    try:
+    async with get_pg_connection() as conn:
         existing = conn.execute(
             "SELECT doc_id, filename FROM t_document WHERE md5_hash=%s AND tenant_id=%s",
             [file_hash, tenant_id],
         ).fetchone()
-    finally:
-        conn.close()
 
     if existing:
         return UploadResponse(
@@ -152,18 +147,6 @@ async def upload_document(
         if not summary:
             summary = " ".join(p.content for p in parsed)[:200]
 
-        # 权限与多租户：索引文档摘要时传入 tenant_id
-        if summary:
-            try:
-                from src.knowledge.embeddings import get_embedding_manager
-                embed_mgr = get_embedding_manager()
-                summary_emb = embed_mgr.encode_query(summary)
-                from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
-                _ensure_summary_collection()
-                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks), tenant_id=tenant_id)
-            except Exception:
-                logger.warning("Failed to index document summary", exc_info=True)
-
         # 权限与多租户：入库时传入 tenant_id
         try:
             if chunker.sentence_window:
@@ -187,30 +170,43 @@ async def upload_document(
             logger.warning("Ingestion skipped (vector store unavailable): %s", exc)
 
     # 权限与多租户：保存文档元数据时写入 tenant_id
-    conn2 = get_pg_connection()
-    try:
+    chunk_strategy_val = strategy or settings.chunk_strategy
+    with get_pg_connection() as conn2:
         conn2.execute(
             """INSERT INTO t_document
                (doc_id, filename, file_type, file_size, pages, parser_used,
-                chunks_count, summary, md5_hash, user_id, tenant_id)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                chunks_count, summary, md5_hash, user_id, tenant_id, chunk_strategy)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             [doc_id, filename, ext, file_size, page_count, parser_used,
-             len(chunks), summary, file_hash, user["user_id"], tenant_id],
+             len(chunks), summary, file_hash, user["user_id"], tenant_id, chunk_strategy_val],
         )
         conn2.commit()
-    finally:
-        conn2.close()
+
+    # 权限与多租户：t_document 写入成功后再索引文档摘要，避免产生孤儿记录
+    if summary:
+        try:
+            from src.knowledge.embeddings import get_embedding_manager
+            embed_mgr = get_embedding_manager()
+            summary_emb = embed_mgr.encode_query(summary)
+            from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
+            await asyncio.to_thread(_ensure_summary_collection)
+            await asyncio.to_thread(_insert_summary, doc_id, summary, summary_emb, filename, len(chunks), tenant_id=tenant_id)
+        except Exception:
+            logger.warning("Failed to index document summary", exc_info=True)
 
     if parse_error:
         status = "parse_failed"
         msg = f"解析失败: {parse_error}"
+        logger.warning("文件 %s 上传失败: %s", filename, parse_error)
     elif not parsed:
         status = "no_text"
         msg = "图片中未检测到可识别文字" if ext.lower() in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp") else "文档中未提取到文字内容"
+        logger.warning("文件 %s 上传失败: 未提取到文字内容", filename)
     else:
         status = "indexed" if chunks else "parsed"
         ingest_msg = f", {len(chunks)} chunks created"
         msg = f"Parsed with {parser_used}, {len(chunks)} chunks created{ingest_msg}"
+        logger.info("文件 %s 上传成功 (doc_id=%s, chunks=%d)", filename, doc_id, len(chunks))
 
     return UploadResponse(
         doc_id=doc_id,
@@ -258,19 +254,16 @@ async def upload_stream(
 
         # Replace: delete old data first (within tenant scope)
         if replace_doc_id:
-            _delete_document(replace_doc_id, tenant_id)  # 权限与多租户：传入 tenant_id
+            await asyncio.to_thread(_delete_document, replace_doc_id, tenant_id)  # 权限与多租户：传入 tenant_id
             yield f"data: {_json.dumps({'step':'read','msg':'已删除旧文档，重新解析中...'})}\n\n"
 
         # Dedup (within tenant scope)
         if not replace_doc_id:
-            conn = get_pg_connection()
-            try:
+            async with get_pg_connection() as conn:
                 existing = conn.execute(
                     "SELECT doc_id FROM t_document WHERE md5_hash=%s AND tenant_id=%s",
                     [file_hash, tenant_id],
                 ).fetchone()
-            finally:
-                conn.close()
             if existing:
                 yield f"data: {_json.dumps({'step':'done','msg':'文件已存在，跳过','status':'duplicate'})}\n\n"
                 return
@@ -366,40 +359,41 @@ async def upload_stream(
                 except Exception as exc:
                     logger.warning("Ingestion skipped: %s", exc)
 
-        # Index document summary with tenant_id
+        # Save metadata to t_document
+        chunk_strategy_val = strategy or settings.chunk_strategy
+        async with get_pg_connection() as conn:
+            conn.execute(
+                """INSERT INTO t_document
+                   (doc_id, filename, file_type, file_size, pages, parser_used,
+                    chunks_count, summary, md5_hash, user_id, tenant_id, chunk_strategy)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                [doc_id, filename, ext, file_size, page_count, parser_used,
+                 len(chunks) if chunks else 0, summary, file_hash, user["user_id"], tenant_id, chunk_strategy_val],
+            )
+            conn.commit()
+
+        # t_document 写入成功后再索引文档摘要，避免产生孤儿记录
         if summary:
             try:
                 from src.knowledge.embeddings import get_embedding_manager
                 embed_mgr = get_embedding_manager()
                 summary_emb = embed_mgr.encode_query(summary)
                 from src.knowledge.index_store import _ensure_summary_collection, _insert_summary
-                _ensure_summary_collection()
-                _insert_summary(doc_id, summary, summary_emb, filename, len(chunks) if chunks else 0, tenant_id=tenant_id)
+                await asyncio.to_thread(_ensure_summary_collection)
+                await asyncio.to_thread(_insert_summary, doc_id, summary, summary_emb, filename, len(chunks) if chunks else 0, tenant_id=tenant_id)
             except Exception:
                 logger.warning("Failed to index document summary", exc_info=True)
 
-        # Save metadata to t_document
-        conn = get_pg_connection()
-        try:
-            conn.execute(
-                """INSERT INTO t_document
-                   (doc_id, filename, file_type, file_size, pages, parser_used,
-                    chunks_count, summary, md5_hash, user_id, tenant_id)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                [doc_id, filename, ext, file_size, page_count, parser_used,
-                 len(chunks) if chunks else 0, summary, file_hash, user["user_id"], tenant_id],
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
         if parse_error:
+            logger.warning("文件 %s 上传失败(stream): %s", filename, parse_error)
             yield f"data: {_json.dumps({'step':'done','msg':f'解析失败: {parse_error}','doc_id':doc_id,'status':'parse_failed'})}\n\n"
         elif not parsed:
             hint = "图片中未检测到可识别文字" if ext.lower() in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp") else "文档中未提取到文字内容"
+            logger.warning("文件 %s 上传失败(stream): 未提取到文字内容", filename)
             yield f"data: {_json.dumps({'step':'done','msg':hint,'doc_id':doc_id,'status':'no_text'})}\n\n"
         else:
             n_ingested = len(chunks)
+            logger.info("文件 %s 上传成功(stream) (doc_id=%s, chunks=%d)", filename, doc_id, n_ingested)
             yield f"data: {_json.dumps({'step':'done','msg':f'入库完成({n_ingested}条)','doc_id':doc_id,'chunks':len(chunks),'parser':parser_used,'status':'done'})}\n\n"
 
     return StreamingResponse(
@@ -410,30 +404,35 @@ async def upload_stream(
 
 def _delete_document(doc_id: str, tenant_id: int | None = None) -> None:
     """Remove a document from vector store, metadata table, and local filesystem."""
-    # 权限与多租户：按租户删除
-    conn = get_pg_connection()
-    try:
-        conn.execute(
-            """DELETE FROM data_documents
-               WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s
-               AND metadata_->>'tenant_id' = %s""",
-            [doc_id, str(tenant_id)],
-        )
-        conn.execute(
-            "DELETE FROM t_document WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        )
-        conn.execute(
-            "DELETE FROM doc_summaries WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        )
-        conn.execute(
-            "DELETE FROM chunk_contexts WHERE doc_id = %s AND tenant_id = %s",
-            [doc_id, tenant_id],
-        )
+    with get_pg_connection_sync() as conn:
+        if tenant_id is None:
+            conn.execute(
+                "DELETE FROM data_documents WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s",
+                [doc_id],
+            )
+            conn.execute("DELETE FROM t_document WHERE doc_id = %s", [doc_id])
+            conn.execute("DELETE FROM doc_summaries WHERE doc_id = %s", [doc_id])
+            conn.execute("DELETE FROM chunk_contexts WHERE doc_id = %s", [doc_id])
+        else:
+            conn.execute(
+                """DELETE FROM data_documents
+                   WHERE COALESCE(metadata_->>'source', metadata_->>'doc_id') = %s
+                   AND metadata_->>'tenant_id' = %s""",
+                [doc_id, str(tenant_id)],
+            )
+            conn.execute(
+                "DELETE FROM t_document WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            )
+            conn.execute(
+                "DELETE FROM doc_summaries WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            )
+            conn.execute(
+                "DELETE FROM chunk_contexts WHERE doc_id = %s AND tenant_id = %s",
+                [doc_id, tenant_id],
+            )
         conn.commit()
-    finally:
-        conn.close()
 
     docs_dir = Path(settings.data_dir) / "documents"
     if docs_dir.exists():

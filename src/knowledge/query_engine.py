@@ -17,7 +17,6 @@ from src.config import settings
 from src.llm.router import get_llm
 from src.api.schemas import SourceInfo
 from src.quality.guard import QualityGuard
-from src.quality.retrieval_quality import RetrievalQualityChecker
 from src.storage.cache import get_memory_cache  # 进程内缓存，相同问题5分钟内直接返回
 
 logger = logging.getLogger(__name__)
@@ -26,6 +25,20 @@ _VECTOR_STORE_DOWN_MSG = (
     "向量数据库未就绪。请先安装依赖并启动 pgvector 或 ChromaDB。\n"
     "运行: pip install llama-index-vector-stores-postgres chromadb"
 )
+
+# LLM 判断检索不相关时的典型回答模式，命中则清空来源避免"没找到+有来源"矛盾
+_NO_ANSWER_MARKERS = [
+    "知识库中没有",
+    "知识库中暂无",
+    "知识库中未",
+    "知识库暂未",
+    "知识库尚无",
+    "知识库不包含",
+    "知识库未收录",
+    "资料库中没有",
+    "请先上传相关文档",
+    "请上传相关文档",
+]
 
 
 class QueryEngine:
@@ -85,7 +98,7 @@ class QueryEngine:
 
         return question
 
-    def _retrieve(self, question: str, top_k: int, doc_ids: list[str] | None = None,
+    async def _retrieve(self, question: str, top_k: int, doc_ids: list[str] | None = None,
                   messages: list[dict] | None = None, tenant_id: int | None = None) -> dict | None:
         """Two-level retrieval with automatic summary-based document pre-filtering.
 
@@ -104,11 +117,11 @@ class QueryEngine:
         t_start = time.time()
         steps: list[dict] = []
 
-        def _do_retrieve(search_query: str, deep: bool = False, ids: list[str] | None = None) -> list | None:
+        async def _do_retrieve(search_query: str, deep: bool = False, ids: list[str] | None = None) -> list | None:
             try:
                 if deep:
-                    return self.retriever.retrieve_with_rerank(search_query, doc_ids=ids, tenant_id=tenant_id)
-                return self.retriever.retrieve(search_query, doc_ids=ids, tenant_id=tenant_id)
+                    return await self.retriever.retrieve_with_rerank(search_query, doc_ids=ids, tenant_id=tenant_id)
+                return await self.retriever.retrieve(search_query, doc_ids=ids, tenant_id=tenant_id)
             except (ImportError, ModuleNotFoundError) as exc:
                 logger.warning("Vector store not available: %s", exc)
                 return None
@@ -117,14 +130,14 @@ class QueryEngine:
         t_l1 = 0.0
         target_ids = doc_ids
         if target_ids is None:
-            doc_count = _count_documents(tenant_id)  # 权限与多租户：传入 tenant_id
+            doc_count = await _count_documents(tenant_id)  # 权限与多租户：传入 tenant_id
             if doc_count >= settings.two_stage_min_docs:
                 try:
                     from src.knowledge.embeddings import get_embedding_manager
                     from src.knowledge.index_store import _search_summaries
                     emb_mgr = get_embedding_manager()
                     query_emb = emb_mgr.encode_query(search_question)
-                    relevant = _search_summaries(query_emb, settings.summary_search_top_k, tenant_id=tenant_id)
+                    relevant = _search_summaries(query_emb, settings.summary_search_top_k, tenant_id=tenant_id)  # sync — uses get_pg_connection_sync
                     if relevant:
                         target_ids = [r["doc_id"] for r in relevant]
                         t_l1 = time.time() - t_start
@@ -136,7 +149,7 @@ class QueryEngine:
 
         # ── Level 2: chunk search (with optional doc filter) ──────
         t_coarse_start = time.time()
-        nodes = _do_retrieve(search_question, ids=target_ids)
+        nodes = await _do_retrieve(search_question, ids=target_ids)
         t_coarse = time.time() - t_coarse_start
         if nodes:
             steps.append({"label": "混合召回", "detail": f"向量搜索 + BM25 → RRF融合 → {len(nodes)} 条候选", "time": round(t_coarse, 2)})
@@ -166,7 +179,7 @@ class QueryEngine:
                 logger.debug("Stage 2 deep search (HyDE): %s (%.2fs)", hyde_text[:100], t_hyde)
                 steps.append({"label": "HyDE 查询重写", "detail": f"LLM 生成假设答案辅助检索", "time": round(t_hyde, 2)})
                 t_deep_start = time.time()
-                nodes = _do_retrieve(hyde_text, deep=True, ids=target_ids)
+                nodes = await _do_retrieve(hyde_text, deep=True, ids=target_ids)
                 t_deep = time.time() - t_deep_start
                 if not nodes:
                     return {"nodes": [], "sources": [], "context": "", "confidence": "low", "steps": steps}
@@ -199,18 +212,28 @@ class QueryEngine:
                 doc_id=node.metadata.get("doc_id", ""),
                 filename=node.metadata.get("filename", ""),
                 chunk_index=node.metadata.get("chunk_index"),
-                score=round(1.0 - getattr(node, "score", 0), 4) if getattr(node, "score", None) else None,
+                score=round(
+                    getattr(node, "score", 0) if getattr(node, '_reranked', False)
+                    else (1.0 - getattr(node, "score", 0)), 4
+                ) if getattr(node, "score", None) is not None else None,
                 snippet=content[:300],
             ))
 
         elapsed = time.time() - t_start
 
-        if top_score >= 0.70:
-            confidence = "high"
-        elif top_score >= 0.50 or deep_search_used:
-            confidence = "medium"
+        if deep_search_used:
+            if top_score >= settings.confidence_high_threshold:
+                confidence = "high"
+            elif top_score >= settings.confidence_medium_threshold:
+                confidence = "medium"
+            else:
+                confidence = "low"
         else:
-            confidence = "low"
+            # 快路径：已经过 stage1 门槛判定够好，至少 medium
+            if top_score >= settings.confidence_high_threshold:
+                confidence = "high"
+            else:
+                confidence = "medium"
 
         timing_parts = []
         if t_l1 > 0:
@@ -225,8 +248,8 @@ class QueryEngine:
         logger.info("检索完成: %d条来源, 置信度=%s, 总耗时 %.1fs (%s)",
                     len(sources), confidence, elapsed, timing_str)
 
-        if confidence == "low" and top_score < 0.40:
-            logger.info("置信度过低(%.3f<0.40)，触发 LLM 兜底", top_score)
+        if confidence == "low" and top_score < settings.confidence_fallback_threshold:
+            logger.info("置信度过低(%.3f<%.2f)，触发 LLM 兜底", top_score, settings.confidence_fallback_threshold)
             return {"nodes": [], "sources": [], "context": "", "confidence": "low"}
 
         return {
@@ -240,7 +263,7 @@ class QueryEngine:
     # ------------------------------------------------------------------
     # sync query (kept for compatibility)
     # ------------------------------------------------------------------
-    def query(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
+    async def query(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
               messages: list[dict] | None = None, tenant_id: int | None = None) -> dict:
         """Full RAG pipeline: retrieve + generate, with caching."""
         # ── 缓存查询 ──────────────────────────────────────
@@ -253,7 +276,7 @@ class QueryEngine:
             logger.debug("RAG 缓存命中: '%s'", question[:60])
             return cached
 
-        result = self._retrieve(question, top_k, doc_ids, messages, tenant_id)
+        result = await self._retrieve(question, top_k, doc_ids, messages, tenant_id)
         if result is None:
             response = {"answer": _VECTOR_STORE_DOWN_MSG, "sources": []}
             cache.set(key, response, ttl=60)  # 缓存1分钟，避免重复检索
@@ -272,52 +295,24 @@ class QueryEngine:
         )
         response = {"answer": answer, "sources": result["sources"]}
 
-        # ── 质量检测钩子 ──────────────────────────────────
-        # 包括预生成检查（检索质量过低时跳过 LLM 生成）和
-        # 后生成检查（安全/事实性/相关性评估）
-        if self.quality_guard is not None and settings.quality_guard_enabled:
-            # 预生成检查：检索质量过低时跳过 LLM 生成
-            if result.get("nodes"):
-                scores = [getattr(n, "score", 0) or 0 for n in result["nodes"]]
-                if RetrievalQualityChecker.should_skip_llm(
-                    scores, settings.retrieval_stage1_threshold,
-                ):
-                    logger.info(
-                        "质检预生成检查触发: 检索质量过低(最高分=%.3f)，跳过 LLM 生成",
-                        max(scores) if scores else 0,
-                    )
-                    response = {
-                        "answer": "知识库中没有找到足够相关的信息。请尝试换一种方式提问。",
-                        "sources": result["sources"],
-                    }
-                    cache.set(key, response, ttl=300)
-                    return response
-
-            # 后生成检查：安全/事实性/相关性评估
-            try:
-                checked_response, _ = self.quality_guard.run(
-                    query=question,
-                    answer=answer,
-                    context=result.get("context", ""),
-                    sources=result["sources"],
-                )
-                response = checked_response # 替换为质检后的响应
-            except Exception as exc:
-                logger.warning("质量检测异常，已跳过质检: %s", exc)
-                # fail-open: 返回原始 answer，quality 字段置 None
-                response["quality"] = None
+        # 检索召回但 LLM 判断不相关时，清空来源避免"没找到+有来源"矛盾
+        if any(m in answer for m in _NO_ANSWER_MARKERS):
+            response["sources"] = []
 
         # ── 写入缓存 ──────────────────────────────────────
         # TTL=300 秒（5分钟），之后重新检索生成
-        # 缓存质检后的结果（含 quality 字段），避免重复质检
         cache.set(key, response, ttl=300)
-        logger.info("RAG 查询: '%s' → %d 条来源, 回答 %d 字", question, len(result["sources"]), len(answer))
+        logger.info("RAG_QUERY %s", json.dumps({
+            "question": question,
+            "answer": answer,
+            "sources": [{"filename": s.filename, "score": s.score, "snippet": s.snippet[:200]} for s in result["sources"]],
+        }, ensure_ascii=False))
         return response
 
     # ------------------------------------------------------------------
     # eval query (for quality evaluation endpoint)
     # ------------------------------------------------------------------
-    def query_eval(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
+    async def query_eval(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
                    messages: list[dict] | None = None, tenant_id: int | None = None) -> dict:
         """Like query() but also returns context for quality evaluation.
 
@@ -331,7 +326,7 @@ class QueryEngine:
             logger.debug("RAG eval cache hit: '%s'", question[:60])
             return cached
 
-        result = self._retrieve(question, top_k, doc_ids, messages, tenant_id)
+        result = await self._retrieve(question, top_k, doc_ids, messages, tenant_id)
         if result is None:
             return {"answer": "向量数据库未就绪", "sources": [], "context": ""}
         if not result["nodes"]:
@@ -348,11 +343,11 @@ class QueryEngine:
     # ------------------------------------------------------------------
     # streaming query
     # ------------------------------------------------------------------
-    def query_stream(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
+    async def query_stream(self, question: str, top_k: int = 5, doc_ids: list[str] | None = None,
                       messages: list[dict] | None = None, tenant_id: int | None = None):
         """Answer a question using RAG — yields SSE JSON lines for streaming."""
         # 权限与多租户：按租户隔离的流式 RAG 查询
-        result = self._retrieve(question, top_k, doc_ids, messages, tenant_id)
+        result = await self._retrieve(question, top_k, doc_ids, messages, tenant_id)
 
         if result is None:
             yield f"data: {json.dumps({'error': _VECTOR_STORE_DOWN_MSG})}\n\n"
@@ -363,82 +358,42 @@ class QueryEngine:
             yield f"data: {json.dumps({'step': 'not_found', 'msg': '知识库中没有找到相关信息。请先上传相关文档。', 'confidence': confidence})}\n\n"
             return
 
-        # Push retrieval steps → sources → confidence so frontend can show the pipeline
+        # Push retrieval steps so frontend can show the pipeline
         steps = result.get("steps", [])
         if steps:
             yield f"data: {json.dumps({'steps': steps})}\n\n"
         confidence = result.get("confidence", "medium")
-        yield f"data: {json.dumps({'status': 'found'})}\n\n"
-        yield f"data: {json.dumps({'sources': [s.model_dump() for s in result['sources']], 'confidence': confidence})}\n\n"
+        yield f"data: {json.dumps({'status': 'found', 'confidence': confidence})}\n\n"
 
         # Stream LLM answer token by token
         prompt = self._build_prompt(question, result["context"])
         llm = get_llm()
 
-        # 收集所有流式回答 chunk，供后续质检使用
-        # 质检需要对完整文本进行评估，因此需要在流式过程中累积每个 chunk
+        # 收集流式回答 chunk，用于日志记录和兜底检测
         _stream_chunks: list[str] = []
         for chunk in llm.chat_stream(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=1024,
         ):
-            _stream_chunks.append(chunk) # 收集 chunk，质检时拼接为完整回答
+            _stream_chunks.append(chunk)
             yield f"data: {json.dumps({'c': chunk})}\n\n"
 
-        # ── 质检：LLM 生成完毕后运行 QualityGuard ──────────────
-        # 收集完整的回答文本用于质检（QualityGuard 需要完整文本才能评估各项维度）
-        # 注意：质检是后置的，不阻塞流式输出，结果通过 quality SSE 事件推送
-        # 将 quality 事件放在 {"done": True} 之前的原因是：
-        # 前端收到 done 事件后停止读取，quality 必须在 done 之前到达
-        if self.quality_guard is not None and settings.quality_guard_enabled:
-            full_answer = "".join(_stream_chunks) # 汇总所有 chunk 得到完整回答
-            try:
-                context = result.get("context", "")
-                sources = result.get("sources", [])
-                _, intervention = self.quality_guard.run(
-                    query=question,
-                    answer=full_answer,
-                    context=context,
-                    sources=sources,
-                )
-
-                # 根据干预动作构建 quality SSE 事件
-                quality_event: dict = {
-                    "type": "quality",
-                    "intervened": intervention.intervened,
-                    "action": intervention.action,
-                    "reason": intervention.reason,
-                    "violations": [
-                        {
-                            "dimension": v.dimension,
-                            "passed": v.passed,
-                            "score": v.score,
-                            "details": v.details,
-                        }
-                        for v in intervention.violations
-                    ],
-                }
-                # 不同动作附加不同字段，为前端提供展示所需信息
-                if intervention.action == "block":
-                    # 拦截：前端需要替换已显示的文本为安全消息
-                    quality_event["override_answer"] = "抱歉，根据内容安全策略，无法展示此回答。"
-                elif intervention.action == "warn":
-                    # 警告：前端在回答下方追加警告提示
-                    quality_event["warning_text"] = "此回答部分内容可能存在问题，请谨慎参考。"
-                elif intervention.action == "degrade":
-                    # 降级：前端清空回答，仅保留来源
-                    quality_event["degrade_reason"] = "回答内容与检索来源不一致，已自动降级。"
-
-                yield f"data: {json.dumps(quality_event, ensure_ascii=False)}\n\n"
-            except Exception as exc:
-                # fail-open: 质检异常时不阻塞流式，仅记录日志，不推送 quality 事件
-                logger.warning("流式质检异常，已跳过: %s", exc)
+        # LLM 完成后判断是否"没找到"再来决定是否发送来源
+        full_answer = "".join(_stream_chunks) if _stream_chunks else ""
+        if any(m in full_answer for m in _NO_ANSWER_MARKERS):
+            sources = []
+        else:
+            sources = [s.model_dump() for s in result["sources"]]
+        yield f"data: {json.dumps({'sources': sources, 'confidence': confidence})}\n\n"
 
         # ── 流式结束标记 ─────────────────────────────────────
-        # done 事件必须放在 quality 事件之后，因为前端收到 done 后停止读取
         yield f"data: {json.dumps({'done': True})}\n\n"
-        logger.info("RAG stream: '%s' → %d sources", question, len(result["sources"]))
+        logger.info("RAG_QUERY_STREAM %s", json.dumps({
+            "question": question,
+            "answer": full_answer,
+            "sources": [{"filename": s.filename, "score": s.score, "snippet": s.snippet[:200]} for s in result["sources"]],
+        }, ensure_ascii=False))
 
     def _generate_hypothetical(self, question: str) -> str | None:
         """HyDE: ask LLM to write a hypothetical answer, improve retrieval recall."""
@@ -461,17 +416,20 @@ class QueryEngine:
         return load_prompt("rag/query", context=context, question=question)
 
 
-def _count_documents(tenant_id: int | None = None) -> int:
+async def _count_documents(tenant_id: int | None = None) -> int:
     """Count documents in the knowledge base (from t_document metadata table)."""
-    """权限与多租户：按租户统计文档数"""
     try:
-        import psycopg
-        conn = psycopg.connect(settings.pg_dsn, connect_timeout=3)
-        count = conn.execute(
-            "SELECT COUNT(*) FROM t_document WHERE tenant_id = %s", [tenant_id],
-        ).fetchone()[0]
-        conn.close()
-        return count
+        from src.api.deps import get_pg_connection
+        async with get_pg_connection() as conn:
+            if tenant_id is not None:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM t_document WHERE tenant_id = %s", [tenant_id],
+                ).fetchone()[0]
+            else:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM t_document",
+                ).fetchone()[0]
+            return count
     except Exception as exc:
         logger.warning("文档计数失败: %s, 默认 0（跳过两级检索）", exc)
         return 0
@@ -489,12 +447,23 @@ def get_query_engine() -> QueryEngine:
         llm = get_llm()
 
         # RAGAS 风格事实性检查器（平滑评分 0~1，非二元）
-        ragas_faithfulness = RagasFaithfulness(llm_provider=llm)
-        ragas_correctness = RagasFactualCorrectness(llm_provider=llm, weight=0.5)
+        # 注入 judge 模型配置，确保 claim 分解使用轻量模型而非默认生成模型
+        ragas_judge_config = {
+            "quality_judge_model": settings.quality_judge_model,
+            "quality_judge_provider": settings.quality_judge_provider,
+        }
+        ragas_faithfulness = RagasFaithfulness(llm_provider=llm, config=ragas_judge_config)
+        ragas_correctness = RagasFactualCorrectness(llm_provider=llm, config=ragas_judge_config)
         logger.info("事实性检查模式: RAGAS-style（平滑评分，F1 + 语义相似度融合）")
 
         checkers = {
-            "safety": SafetyChecker(llm_provider=llm),
+            "safety": SafetyChecker(llm_provider=llm, config={
+                "quality_judge_model": settings.quality_judge_model,
+                "quality_judge_provider": settings.quality_judge_provider,
+                "quality_judge_timeout_s": settings.quality_judge_timeout_s,
+                "quality_fail_closed_for_safety": settings.quality_fail_closed_for_safety,
+                "prompts_dir": settings.prompts_dir,
+            }),
             # 替换旧的 FactualityChecker 为 RAGAS 忠实度检查
             "factuality": ragas_faithfulness,
             # 新增 RAGAS 答案正确性检查（需要 ground_truth 时生效）

@@ -25,7 +25,7 @@ def main():
     import logging
     logging.basicConfig(level=logging.WARNING)
 
-    model = FlagReranker(_RERANKER_MODEL, use_fp16=True)
+    model = FlagReranker(_RERANKER_MODEL, use_fp16=False)
 
     for line in sys.stdin:
         line = line.strip()
