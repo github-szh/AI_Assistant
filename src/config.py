@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     pg_port: int = 5432
     pg_database: str = "ai_assistant"
     pg_user: str = "postgres"
-    pg_password: str = "changeme"
+    pg_password: str = "123456"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     s3_bucket: str = "ai-documents"
 
     # SSL
-    ssl_verify: bool = True
+    ssl_verify: bool = False
     ssl_cert_bundle: str = ""
 
     # Retrieval
