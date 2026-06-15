@@ -128,17 +128,21 @@ async def list_users(user: dict = Depends(require_permission("tenant:users:manag
             rows = conn.execute(
                 """SELECT u.id, u.username, u.display_name, r.name AS role, u.is_active, u.created_at,
                           u.tenant_id, t.name
-                   FROM t_user u LEFT JOIN t_tenant t ON u.tenant_id = t.id
-                   ORDER BY CASE u.role WHEN 'super_admin' THEN 1 WHEN 'tenant_admin' THEN 2 WHEN 'editor' THEN 3 WHEN 'viewer' THEN 4 END, u.id"""
+                   FROM t_user u
+                   LEFT JOIN t_tenant t ON u.tenant_id = t.id
+                   LEFT JOIN t_role r ON u.role_id = r.id
+                   ORDER BY r.id, u.id"""
             ).fetchall()
         else:
             tenant_id = user.get("tenant_id")
             rows = conn.execute(
                 """SELECT u.id, u.username, u.display_name, r.name AS role, u.is_active, u.created_at,
                           u.tenant_id, t.name
-                   FROM t_user u LEFT JOIN t_tenant t ON u.tenant_id = t.id
-                   WHERE u.tenant_id = %s AND u.role != 'super_admin'
-                   ORDER BY CASE u.role WHEN 'super_admin' THEN 1 WHEN 'tenant_admin' THEN 2 WHEN 'editor' THEN 3 WHEN 'viewer' THEN 4 END, u.id""",
+                   FROM t_user u
+                   LEFT JOIN t_tenant t ON u.tenant_id = t.id
+                   LEFT JOIN t_role r ON u.role_id = r.id
+                   WHERE u.tenant_id = %s AND r.name != 'super_admin'
+                   ORDER BY r.id, u.id""",
                 [tenant_id],
             ).fetchall()
         return {"users": [{

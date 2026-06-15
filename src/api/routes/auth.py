@@ -9,8 +9,19 @@ from pydantic import BaseModel
 import bcrypt
 import jwt
 
+import psycopg
+
 from src.config import settings
 from src.api.deps import get_pg_connection
+
+
+def _get_pg():
+    """同步 PG 连接，_verify_user 专用（不经过异步连接池）。"""
+    dsn = (
+        f"postgresql://{settings.pg_user}:{settings.pg_password}"
+        f"@{settings.pg_host}:{settings.pg_port}/{settings.pg_database}"
+    )
+    return psycopg.connect(dsn, connect_timeout=5)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
@@ -134,8 +145,9 @@ async def login(req: LoginRequest):
     async with get_pg_connection() as conn:
         user_row = conn.execute(
             """SELECT u.id, u.username, u.password_hash, u.display_name,
-                      u.role, u.tenant_id, u.is_active, t.name, t.is_active AS tenant_active
+                      r.name AS role, u.tenant_id, u.is_active, t.name, t.is_active AS tenant_active
                FROM t_user u
+               LEFT JOIN t_role r ON u.role_id = r.id
                LEFT JOIN t_tenant t ON u.tenant_id = t.id
                WHERE u.username = %s""",
             [req.username],
