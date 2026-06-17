@@ -198,6 +198,9 @@ def _expand_to_parents(child_nodes: list, tenant_id: int | None = None) -> list:
         dms = getattr(node, '_dense_max_score', None)
         if dms is not None:
             object.__setattr__(parent, '_dense_max_score', dms)
+        ds = getattr(node, '_dense_score', None)
+        if ds is not None:
+            object.__setattr__(parent, '_dense_score', ds)
         result.append(parent)
 
     if parent_ids:
@@ -271,11 +274,12 @@ class HybridRetriever:
         t_vec = time.monotonic()
         result = store.query(q)
         dense_nodes = result.nodes or []
-        # Attach similarity scores
+        # Attach similarity scores (save original before RRF overwrites)
         if result.similarities:
             for node, score in zip(dense_nodes, result.similarities):
                 if score is not None:
                     object.__setattr__(node, 'score', score)
+                    object.__setattr__(node, '_dense_score', score)
 
         logger.debug("向量召回: %d条 (%.2fs)", len(dense_nodes), time.monotonic() - t_vec)
 

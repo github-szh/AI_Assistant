@@ -214,7 +214,7 @@ class QueryEngine:
                 chunk_index=node.metadata.get("chunk_index"),
                 score=round(
                     getattr(node, "score", 0) if getattr(node, '_reranked', False)
-                    else (1.0 - getattr(node, "score", 0)), 4
+                    else (1.0 - getattr(node, "_dense_score", getattr(node, "score", 0))), 4
                 ) if getattr(node, "score", None) is not None else None,
                 snippet=content[:300],
             ))
