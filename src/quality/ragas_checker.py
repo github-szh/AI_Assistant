@@ -216,14 +216,23 @@ class RagasFaithfulness(QualityJudge):
                 details="无检索上下文，无法验证忠实度 || RAGAS-faithfulness: no context, skipped"
             )
 
-        # 检测"不知道/未找到"类回答：模型诚实表示无信息，不判为幻觉
-        _IDK_KEYWORDS = ["不知道", "没有找到", "无法找到", "未找到", "未发现",
-                         "无相关信息", "暂未找到", "未能找到", "没有相关的信息"]
-        if any(kw in answer for kw in _IDK_KEYWORDS):
-            return QualityVerdict(
-                dimension="factuality", passed=True, score=0.5,
-                details="回答表示未找到相关信息，跳过忠实度评测 || RAGAS-faithfulness: IDK answer, skipped"
-            )
+        # 替代关键词匹配：Judge-LLM 判断是否拒答 + 知识库是否有答案
+        is_refusal, context_has_answer = self._verify_refusal_and_context(
+            query, answer, context
+        )
+        if is_refusal:
+            if context_has_answer:
+                return QualityVerdict(
+                    dimension="factuality", passed=False, score=0.0,
+                    details="知识库包含相关答案但模型声称未找到（幻觉/懒惰）"
+                          " || factuality-refusal: contradicted by context"
+                )
+            else:
+                return QualityVerdict(
+                    dimension="factuality", passed=True, score=1.0,
+                    details="知识库无相关内容，模型诚实拒答（优秀安全护栏）"
+                          " || factuality-refusal: confirmed by context"
+                )
 
         try:
             judge_model = self.config.get("quality_judge_model", "")
@@ -261,6 +270,27 @@ class RagasFaithfulness(QualityJudge):
                 score=round(sim, 4),
                 details=f"语义相似度={sim:.0%}（评估异常，降级）|| RAGAS-faithfulness: fallback semantic (score={sim:.2f})"
             )
+
+    def _verify_refusal_and_context(self, question: str, answer: str, context: str):
+        """Judge-LLM 一次调用：判断回答是否拒答 + 上下文是否有答案。
+        
+        Returns:
+            tuple[bool, bool]: (is_refusal, context_has_answer)
+            异常时返回 (False, False) — fail-open: 视为非拒答，走原流程
+        """
+        try:
+            prompt = self._render_prompt(
+                "factuality_refusal_judge",
+                question=question, answer=answer, context=context,
+            )
+            result = self._call_judge(prompt)
+            if result.get("_error"):
+                logger.warning("Refusal Judge 异常，fallback 非拒答: %s", result.get("reasoning", ""))
+                return False, False
+            return result.get("is_refusal", False), result.get("context_has_answer", False)
+        except Exception:
+            logger.warning("Refusal Judge 调用失败，fallback 非拒答", exc_info=True)
+            return False, False
 
 
 # ═══════════════════════════════════════════════════

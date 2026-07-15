@@ -441,7 +441,8 @@ def get_query_engine() -> QueryEngine:
     from src.quality.guard import QualityGuard
     from src.quality.intervention import InterventionEngine
     from src.quality.safety import SafetyChecker
-    from src.quality.ragas_checker import RagasFaithfulness, RagasFactualCorrectness, RagasAnswerRelevancy
+    from src.quality.ragas_checker import RagasFaithfulness, RagasFactualCorrectness
+    from src.quality.relevance import RelevanceChecker
 
     try:
         llm = get_llm()
@@ -468,7 +469,7 @@ def get_query_engine() -> QueryEngine:
             "factuality": ragas_faithfulness,
             # 新增 RAGAS 答案正确性检查（需要 ground_truth 时生效）
             "answer_correctness": ragas_correctness,
-            "relevance": RagasAnswerRelevancy(llm_provider=llm),
+            "relevance": RelevanceChecker(llm_provider=llm),
         }
         intervention = InterventionEngine()
         quality_guard = QualityGuard(checkers, intervention, settings)

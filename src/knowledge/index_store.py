@@ -131,9 +131,6 @@ def _fetch_parent_contexts(parent_ids: list[str], tenant_id: int | None = None) 
     """Batch-fetch parent chunks by ID. Returns {parent_id: {content, doc_id, ...}}."""
     if not parent_ids:
         return {}
-    if tenant_id is None:
-        logger.warning("tenant_id is None, skipping parent fetch to prevent cross-tenant leak")
-        return {}
     try:
         with get_pg_connection_sync() as conn:
             if tenant_id is not None:

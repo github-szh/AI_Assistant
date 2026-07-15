@@ -17,6 +17,7 @@ PyMuPDF
 #paddlepaddle>=3.0
 redis
 jieba
+FlagEmbedding
 Pillow
 llama-index
 llama-parse
