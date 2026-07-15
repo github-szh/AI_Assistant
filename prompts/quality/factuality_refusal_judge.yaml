@@ -1,0 +1,14 @@
+factuality_refusal_judge: |
+  你是事实性审查员。请同时判断以下两点：
+
+  用户问题：{{ question }}
+  检索文档：{{ context }}
+  模型回答：{{ answer }}
+
+  请回答：
+  1. 模型回答是否属于"无法回答/拒绝回答/表示不知道"类型？
+     （如"知识库中没有""暂未找到""无法提供""没有相关信息"等）
+  2. 检索文档是否包含足以回答用户问题的信息？
+
+  请以 JSON 格式输出，不要包含 markdown 代码块：
+  {"is_refusal": true/false, "context_has_answer": true/false, "reasoning": "简要理由"}

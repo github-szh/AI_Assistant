@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from src.api.deps import get_pg_connection
-from src.api.schemas import QueryRequest, QueryResponse, EvalResponse, VerdictDetail
+from src.api.schemas import QueryRequest, QueryResponse, EvalResponse, VerdictDetail, InterventionInfo
 from src.api.permissions import require_permission, get_effective_tenant_id
 from src.knowledge.query_engine import QueryEngine, get_query_engine
 
@@ -130,6 +130,55 @@ async def query_knowledge_eval(
 ):
     """Query the knowledge base with detailed quality evaluation (admin-only)."""
     logger.info("RAG eval: '%s' (top_k=%d, tenant=%s)", req.question[:100], req.top_k, user.get("tenant_id"))
+
+    from src.config import settings
+
+    # 前置安全审查：LLM Judge 审查用户输入（仅 /eval 端点）
+    if settings.quality_guard_enabled:
+        try:
+            prompt_path = "prompts/quality/input_safety.yaml"
+            with open(prompt_path, encoding="utf-8") as f:
+                import yaml as _yaml
+                prompt_template = _yaml.safe_load(f)["input_safety"]
+
+            prompt = prompt_template.replace("{{ question }}", req.question)
+
+            from src.llm.router import get_llm
+            _llm = get_llm()
+            response = _llm.chat(
+                messages=[{"role": "user", "content": prompt}],
+                model=settings.quality_judge_model,
+                temperature=0.0,
+                max_tokens=256,
+            )
+
+            import json as _json
+            result = _json.loads(response)
+
+            if not result.get("passed", True):
+                logger.info(
+                    "RAG eval input pre-check BLOCK: '%s' — reason: %s",
+                    req.question[:100], result.get("reason", "")
+                )
+                return EvalResponse(
+                    answer="",
+                    sources=[],
+                    quality={
+                        "safety": VerdictDetail(
+                            dimension="safety", passed=False,
+                            score=0.0, details="输入安全审查未通过",
+                        )
+                    },
+                    intervention=InterventionInfo(
+                        intervened=True, action="block",
+                        reason="输入内容不符合安全规范，已拦截",
+                        violations=[],
+                    ),
+                )
+            else:
+                logger.debug("RAG eval input pre-check PASS: '%s'", req.question[:50])
+        except Exception as exc:
+            logger.warning("RAG eval input pre-check error, fail-open: %s", exc)
 
     # 1. Get answer + sources + context
     eval_result = await engine.query_eval(
